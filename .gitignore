@@ -1,0 +1,29 @@
+# ⬇️ Entorno virtual
+.venv/
+venv/
+env/
+# ⬇️ Archivos grandes de modelos / checkpoints
+*.bin
+*.pt
+*.gguf
+*.safetensors
+
+# ⬇️ Cachés y compilados
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints
+
+# ⬇️ Datos y logs generados
+logs/
+outputs/
+*.log
+*.jsonl
+*.csv
+
+# ⬇️ Variables de entorno
+.env*
+*.env
+
+# ⬇️ Otros artefactos
+dist/
+build/
