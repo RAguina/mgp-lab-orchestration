@@ -2,7 +2,7 @@
 
 from typing import Literal
 from langchain_core.runnables import RunnableLambda
-from langchain_integration.langgraph.routing_agent import AgentState
+from langchain_integration.langgraph.agent_state import AgentState
 
 MAX_RETRIES = 1
 

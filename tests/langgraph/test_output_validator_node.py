@@ -1,6 +1,6 @@
 # tests/langgraph/test_output_validator_node.py
 from langchain_integration.langgraph.validators import output_validator_node
-from langchain_integration.langgraph.routing_agent import AgentState
+from langchain_integration.langgraph.agent_state import AgentState
 
 
 def test_output_validator_retry_trigger():

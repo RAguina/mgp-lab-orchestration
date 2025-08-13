@@ -1,6 +1,6 @@
 # tests/langgraph/test_history_reader_node.py
 from langchain_integration.tools.history_tools import history_reader_node
-from langchain_integration.langgraph.routing_agent import AgentState
+from langchain_integration.langgraph.agent_state import AgentState
 
 
 def test_history_reader_node_handles_missing_dir(tmp_path):

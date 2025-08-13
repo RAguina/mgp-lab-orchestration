@@ -1,212 +1,127 @@
 """
 Agente LangGraph con routing condicional y múltiples nodos especializados
-Versión 2: Con logging detallado y arquitectura Worker/Orchestrator
+Versión 4: Modularizado completamente - Solo ejecuta, no construye responses
 """
 
 import logging
 import time
-from typing import Literal, List, Dict, Any
-from langgraph.graph import StateGraph, END
-from langchain_core.runnables import RunnableLambda
+from typing import Dict, Any
 
-# Configurar logging detallado
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # Console output
-        logging.FileHandler('logs/orchestrator.log', mode='a')  # File output
-    ]
-)
-
-# Logger específico para el orquestrador
+# Logger del orquestador
 orchestrator_logger = logging.getLogger("orchestrator")
 
-# Importar AgentState desde archivo separado (evita imports circulares)
+# Estado
 from langchain_integration.langgraph.agent_state import AgentState, create_initial_state
 
-# Importar herramientas, nodos y lógica externa
-from langchain_integration.langgraph.local_llm_node import build_local_llm_tool_node
-from langchain_integration.langgraph.nodes.task_analyzer_node import task_analyzer_node
-from langchain_integration.langgraph.nodes.output_validator_node import (
-    output_validator_node, route_after_validation
-)
-from langchain_integration.tools.history_tools import (
-    HistoryReaderNode, should_include_history
-)
-from langchain_integration.langgraph.nodes.resource_monitor_node import resource_monitor_node
-from langchain_integration.langgraph.nodes.execution_node import execution_node
-from langchain_integration.langgraph.nodes.summary_node import summary_node
+# Gateway (inyectable)
+from providers.provider_gateway import ProviderGateway
 
-def route_after_analysis(state: AgentState) -> Literal["monitor", "skip_monitor"]:
-    """
-    Ruta después del análisis de tarea con logging detallado
-    """
-    task_type = state.get("task_type", "unknown")
-    
-    orchestrator_logger.info(f"[ROUTING] Deciding path after analysis for task_type: {task_type}")
-    
-    if task_type in ["code", "analysis"]:
-        orchestrator_logger.info(f"[ROUTING] Task '{task_type}' requires resource monitoring -> monitor")
-        return "monitor"
-    elif task_type == "chat":
-        orchestrator_logger.info(f"[ROUTING] Task '{task_type}' is simple chat -> skip_monitor")
-        return "skip_monitor"
-    else:
-        orchestrator_logger.info(f"[ROUTING] Unknown task '{task_type}' -> monitor (safe default)")
-        return "monitor"
+# Orquestación modularizada
+from langchain_integration.langgraph.orchestration import build_routing_graph
+from langchain_integration.langgraph.orchestration.flow_metrics import build_api_response, build_error_response
 
-def build_routing_graph():
-    """
-    Construye el grafo de routing con todos los workers
-    """
-    orchestrator_logger.info("[GRAPH] Building routing graph with worker nodes")
-    
-    builder = StateGraph(AgentState)
-    
-    # Registrar workers (nodos especializados)
-    workers = {
-        "analyzer": task_analyzer_node,
-        "monitor": resource_monitor_node,
-        "executor": execution_node,
-        "validator": output_validator_node,
-        "history": HistoryReaderNode,
-        "summarizer": summary_node
-    }
-    
-    orchestrator_logger.info(f"[GRAPH] Registering {len(workers)} workers: {list(workers.keys())}")
-    
-    # Agregar nodos (workers) al grafo
-    for worker_name, worker_func in workers.items():
-        if worker_name == "history":
-            builder.add_node(worker_name, worker_func)  # HistoryReaderNode ya es RunnableLambda
-        else:
-            builder.add_node(worker_name, RunnableLambda(worker_func))
-        orchestrator_logger.debug(f"[GRAPH] Worker '{worker_name}' registered")
+# Nodos - solo execution_mod para gateway injection
+import langchain_integration.langgraph.nodes.execution_node as execution_mod
 
-    # Configurar flujo de workers
-    orchestrator_logger.info("[GRAPH] Configuring worker flow and routing logic")
-    
-    builder.set_entry_point("analyzer")
-    
-    # Routing condicional después del análisis
-    builder.add_conditional_edges("analyzer", route_after_analysis, {
-        "monitor": "monitor",
-        "skip_monitor": "executor"
-    })
-    
-    # Flujo lineal para el resto
-    builder.add_edge("monitor", "executor")
-    builder.add_edge("executor", "validator")
-    
-    # Validación con posible retry
-    builder.add_conditional_edges("validator", route_after_validation, {
-        "retry_execution": "executor",
-        "continue": "history"
-    })
-    
-    # Historia condicional
-    builder.add_conditional_edges("history", should_include_history, {
-        "read_history": "summarizer",
-        "skip_history": "summarizer"
-    })
-    
-    # Finalizar
-    builder.add_edge("summarizer", END)
-    
-    orchestrator_logger.info("[GRAPH] Graph compilation completed successfully")
-    
-    return builder.compile()
 
-def run_routing_agent(user_input: str, verbose: bool = True) -> Dict[str, Any]:
+def run_routing_agent(
+    user_input: str, 
+    gateway: ProviderGateway | None = None, 
+    flow_type: str = "linear",
+    verbose: bool = True
+) -> Dict[str, Any]:
     """
-    Ejecuta el agente de routing completo con logging detallado
+    Ejecuta el agente de routing con Gateway inyectado y flow type configurable.
+    
+    Args:
+        user_input: Prompt del usuario
+        gateway: Gateway de modelos (opcional, usa default si None)
+        flow_type: Tipo de flujo ("linear", "challenge", etc.)
+        verbose: Si mostrar información detallada
+    
+    Returns:
+        Dict con resultado de la ejecución
     """
     execution_id = f"exec_{int(time.time())}"
     start_time = time.time()
-    
-    orchestrator_logger.info(f"[{execution_id}] === ORCHESTRATOR EXECUTION STARTED ===")
-    orchestrator_logger.info(f"[{execution_id}] User input: '{user_input[:100]}...'")
-    orchestrator_logger.info(f"[{execution_id}] Verbose mode: {verbose}")
-    
+
+    orchestrator_logger.info(f"[{execution_id}] === ORCHESTRATOR START ===")
+    orchestrator_logger.info(f"[{execution_id}] Input: '{user_input[:100]}...'")
+    orchestrator_logger.info(f"[{execution_id}] Flow type: {flow_type}")
+    orchestrator_logger.info(f"[{execution_id}] Verbose: {verbose}")
+
     try:
-        # Construir grafo
-        graph_start = time.time()
-        graph = build_routing_graph()
-        graph_time = time.time() - graph_start
+        # Inyectar Gateway en el execution_node (si existe)
+        if gateway is None:
+            gateway = ProviderGateway()
         
-        orchestrator_logger.info(f"[{execution_id}] Graph built in {graph_time:.3f}s")
-        
-        # Crear estado inicial
+        # Verificar si set_gateway existe antes de llamarlo
+        if hasattr(execution_mod, 'set_gateway'):
+            execution_mod.set_gateway(gateway)
+            orchestrator_logger.info(f"[{execution_id}] Gateway injected successfully")
+        else:
+            orchestrator_logger.warning(f"[{execution_id}] execution_node.set_gateway not found, skipping injection")
+
+        # Construir grafo usando el builder modularizado
+        t0 = time.time()
+        graph = build_routing_graph(flow_type)
+        build_ms = int((time.time() - t0) * 1000)
+        orchestrator_logger.info(f"[{execution_id}] Graph built in {build_ms} ms")
+
+        # Estado inicial
         initial_state = create_initial_state(user_input)
-        orchestrator_logger.info(f"[{execution_id}] Initial state created with {len(initial_state)} fields")
-        
+        orchestrator_logger.info(f"[{execution_id}] Initial state fields: {len(initial_state)}")
+
         if verbose:
             print(f"\n🤖 Ejecutando agente con routing... [ID: {execution_id}]")
+            print(f"📊 Flow type: {flow_type}")
             print("=" * 50)
 
-        # Ejecutar grafo con logging de progreso
-        execution_start = time.time()
-        orchestrator_logger.info(f"[{execution_id}] Starting graph execution")
-        
+        # Ejecutar
+        t1 = time.time()
         result = graph.invoke(initial_state)
-        
-        execution_time = time.time() - execution_start
-        total_time = time.time() - start_time
-        
-        orchestrator_logger.info(f"[{execution_id}] Graph execution completed in {execution_time:.2f}s")
-        orchestrator_logger.info(f"[{execution_id}] Total orchestrator time: {total_time:.2f}s")
-        
-        # Log resultado
-        output_length = len(result.get('output', ''))
-        messages_count = len(result.get('messages', []))
-        
-        orchestrator_logger.info(f"[{execution_id}] Execution results:")
-        orchestrator_logger.info(f"[{execution_id}] - Output length: {output_length} chars")
-        orchestrator_logger.info(f"[{execution_id}] - Messages generated: {messages_count}")
-        orchestrator_logger.info(f"[{execution_id}] - Task type: {result.get('task_type', 'unknown')}")
-        orchestrator_logger.info(f"[{execution_id}] - Model used: {result.get('selected_model', 'unknown')}")
-        
-        # Extraer métricas de workers
-        execution_metrics = result.get('execution_metrics', {})
-        if execution_metrics:
-            cache_hit = execution_metrics.get('cache_hit', False)
-            load_time = execution_metrics.get('load_time', 0)
-            inference_time = execution_metrics.get('inference_time', 0)
-            
-            orchestrator_logger.info(f"[{execution_id}] Worker metrics:")
-            orchestrator_logger.info(f"[{execution_id}] - Cache hit: {cache_hit}")
-            orchestrator_logger.info(f"[{execution_id}] - Load time: {load_time:.2f}s")
-            orchestrator_logger.info(f"[{execution_id}] - Inference time: {inference_time:.2f}s")
+        exec_ms = int((time.time() - t1) * 1000)
+        total_ms = int((time.time() - start_time) * 1000)
+
+        orchestrator_logger.info(f"[{execution_id}] Graph exec: {exec_ms} ms | total: {total_ms} ms")
+
+        # Log resumen
+        out_len = len(result.get("output", "") or "")
+        msgs = len(result.get("messages", []) or [])
+        orchestrator_logger.info(f"[{execution_id}] Output len: {out_len} | Messages: {msgs}")
+        orchestrator_logger.info(f"[{execution_id}] Task: {result.get('task_type', 'unknown')} | Model: {result.get('selected_model', 'unknown')}")
+
+        # Métricas
+        m = result.get("execution_metrics", {}) or {}
+        if m:
+            orchestrator_logger.info(
+                f"[{execution_id}] Worker metrics: cache={m.get('cache_hit')} | "
+                f"load={m.get('load_time_ms','?')}ms | infer={m.get('inference_time_ms','?')}ms"
+            )
 
         if verbose:
             print("\n📊 Proceso completado:")
-            print(f"📍 {result.get('final_summary', 'Sin resumen')}")
-            print(f"⏱️ Tiempo total: {total_time:.2f}s")
+            print(f"⏱️ Tiempo total: {total_ms/1000:.2f}s")
             print("\n🔍 Mensajes del proceso:")
             for i, msg in enumerate(result.get('messages', []), 1):
                 print(f"  {i:2d}. {msg}")
-            
-            # Mostrar métricas si están disponibles
-            if execution_metrics:
-                print(f"\n📈 Métricas:")
-                print(f"  Cache: {'HIT' if cache_hit else 'MISS'}")
-                print(f"  Carga: {load_time:.1f}s | Inferencia: {inference_time:.1f}s")
 
-        orchestrator_logger.info(f"[{execution_id}] === ORCHESTRATOR EXECUTION COMPLETED ===")
-        
+            if m:
+                print(f"\n📈 Métricas:")
+                print(f"  Cache: {'HIT' if m.get('cache_hit') else 'MISS'}")
+                print(f"  Carga: {m.get('load_time_ms', 0)}ms | Inferencia: {m.get('inference_time_ms', 0)}ms")
+
+        orchestrator_logger.info(f"[{execution_id}] === ORCHESTRATOR DONE ===")
         return result
-        
+
     except Exception as e:
-        error_time = time.time() - start_time
-        orchestrator_logger.error(f"[{execution_id}] === ORCHESTRATOR EXECUTION FAILED ===")
-        orchestrator_logger.error(f"[{execution_id}] Error after {error_time:.2f}s: {str(e)}")
-        orchestrator_logger.error(f"[{execution_id}] Exception type: {type(e).__name__}")
-        
+        err_ms = int((time.time() - start_time) * 1000)
+        orchestrator_logger.error(f"[{execution_id}] === ORCHESTRATOR FAILED ===")
+        orchestrator_logger.error(f"[{execution_id}] Error after {err_ms} ms: {e}")
+
         if verbose:
-            print(f"\n❌ Error en orquestador: {str(e)}")
-        
-        # Retornar estado de error
+            print(f"\n❌ Error en orquestador: {e}")
+
         return {
             "input": user_input,
             "output": f"Error en orquestador: {str(e)}",
@@ -217,166 +132,91 @@ def run_routing_agent(user_input: str, verbose: bool = True) -> Dict[str, Any]:
             "execution_metrics": {
                 "failed": True,
                 "error": str(e),
-                "total_time": error_time
+                "total_time_ms": err_ms,
             }
         }
 
-def run_orchestrator(prompt: str) -> dict:
+
+def run_orchestrator(prompt: str, flow_type: str = "linear") -> Dict[str, Any]:
     """
-    Wrapper público para usar el agente desde el backend.
-    Ejecuta el routing_agent y extrae output, flow y métricas.
+    Wrapper público para backend: ejecuta el routing_agent y produce flow+metrics.
+    
+    Args:
+        prompt: Prompt del usuario
+        flow_type: Tipo de flujo a ejecutar
+    
+    Returns:
+        Dict con flow, output y metrics para el frontend
     """
     api_call_id = f"api_{int(time.time())}"
-    orchestrator_logger.info(f"[{api_call_id}] API call to run_orchestrator")
+    orchestrator_logger.info(f"[{api_call_id}] API run_orchestrator")
     orchestrator_logger.info(f"[{api_call_id}] Prompt: '{prompt[:100]}...'")
-    
+    orchestrator_logger.info(f"[{api_call_id}] Flow type: {flow_type}")
+
     try:
-        full_state = run_routing_agent(prompt, verbose=False)
-        model_used = full_state.get("selected_model", "mistral7b")
+        # Ejecutar el routing agent
+        full_state = run_routing_agent(prompt, flow_type=flow_type, verbose=False)
         
-        # Extraer métricas de ejecución si están disponibles
-        execution_metrics = full_state.get("execution_metrics", {})
-        analysis_metadata = full_state.get("analysis_metadata", {})
-        validation_metadata = full_state.get("validation_metadata", {})
+        # Construir respuesta usando flow_metrics
+        result = build_api_response(full_state, flow_type)
         
-        orchestrator_logger.info(f"[{api_call_id}] Building flow representation")
-        
-        # Crear flow más detallado basado en workers ejecutados
-        flow_nodes = []
-        
-        # Nodo de análisis (siempre se ejecuta)
-        if full_state.get("task_type"):
-            flow_nodes.append({
-                "id": "task_analyzer",
-                "name": "Task Analyzer",
-                "type": "task_analyzer",
-                "status": "completed",
-                "start_time": 0,
-                "end_time": analysis_metadata.get("processing_time", 0.5),
-                "output": f"Detected: {full_state.get('task_type')} → {model_used}"
-            })
-        
-        # Nodo de monitoreo (si se ejecutó)
-        if full_state.get("vram_status"):
-            flow_nodes.append({
-                "id": "resource_monitor",
-                "name": "Resource Monitor",
-                "type": "resource_monitor", 
-                "status": "completed",
-                "start_time": 0.5,
-                "end_time": 1.0,
-                "output": f"VRAM: {full_state.get('vram_status')}"
-            })
-        
-        # Nodo de ejecución principal (siempre se ejecuta)
-        execution_status = "completed" if execution_metrics.get("failed") != True else "error"
-        flow_nodes.append({
-            "id": "model_execution",
-            "name": f"Model: {model_used}",
-            "type": "llm_inference",
-            "status": execution_status,
-            "start_time": execution_metrics.get("load_time", 0),
-            "end_time": execution_metrics.get("total_time", 1),
-            "output": full_state.get("output", "Sin salida")[:100] + "..."
-        })
-        
-        # Nodo de validación (si se ejecutó)
-        if validation_metadata:
-            validation_status = "error" if validation_metadata.get("should_retry") else "completed"
-            flow_nodes.append({
-                "id": "output_validator",
-                "name": "Output Validator",
-                "type": "validator",
-                "status": validation_status,
-                "start_time": execution_metrics.get("total_time", 1),
-                "end_time": execution_metrics.get("total_time", 1) + validation_metadata.get("validation_time", 0.1),
-                "output": f"Score: {validation_metadata.get('validation_results', {}).get('overall_score', 'N/A')}/10"
-            })
-
-        # Crear edges dinámicamente
-        edges = []
-        if len(flow_nodes) > 1:
-            for i in range(len(flow_nodes) - 1):
-                edges.append({
-                    "source": flow_nodes[i]["id"],
-                    "target": flow_nodes[i + 1]["id"]
-                })
-
-        result = {
-            "flow": {
-                "nodes": flow_nodes,
-                "edges": edges
-            },
-            "output": full_state.get("output", "Sin salida"),
-            "metrics": {
-                "totalTime": execution_metrics.get("total_time", 1) * 1000,  # Convert to ms
-                "tokensGenerated": execution_metrics.get("tokens_generated", 
-                                                       len(full_state.get("output", "").split())),
-                "modelsUsed": [model_used],
-                "cacheHit": execution_metrics.get("cache_hit", False),
-                "loadTime": execution_metrics.get("load_time", 0) * 1000,
-                "inferenceTime": execution_metrics.get("inference_time", 0) * 1000,
-                "workersExecuted": len(flow_nodes),
-                "qualityScore": validation_metadata.get('validation_results', {}).get('overall_score', 0)
-            }
-        }
-        
-        orchestrator_logger.info(f"[{api_call_id}] Successfully created API response")
-        orchestrator_logger.info(f"[{api_call_id}] Workers executed: {len(flow_nodes)}")
+        # Log de éxito
+        nodes_count = len(result.get("flow", {}).get("nodes", []))
+        orchestrator_logger.info(f"[{api_call_id}] API response OK | workers={nodes_count} | flow={flow_type}")
         
         return result
-        
+
     except Exception as e:
-        orchestrator_logger.error(f"[{api_call_id}] API call failed: {str(e)}")
-        
-        # Fallback en caso de error
-        return {
-            "flow": {
-                "nodes": [{
-                    "id": "error",
-                    "name": "Orchestrator Error",
-                    "type": "error",
-                    "status": "error",
-                    "output": f"Error en orquestador: {str(e)}"
-                }],
-                "edges": []
-            },
-            "output": f"Error ejecutando orquestador: {str(e)}",
-            "metrics": {
-                "totalTime": 0,
-                "tokensGenerated": 0,
-                "modelsUsed": [],
-                "cacheHit": False,
-                "loadTime": 0,
-                "inferenceTime": 0,
-                "workersExecuted": 0,
-                "failed": True
-            }
-        }
+        orchestrator_logger.error(f"[{api_call_id}] API failed: {e}")
+        return build_error_response(str(e), flow_type)
+
 
 if __name__ == "__main__":
-    # Configurar logging adicional para modo debug
     orchestrator_logger.setLevel(logging.DEBUG)
+    print("🥚 Demo de Agente con Routing v4.0 (Completamente Modularizado)")
+    print("=" * 60)
     
-    print("🥚 Demo de Agente con Routing v2.0")
-    print("=" * 50)
-    test_queries = [
+    # Importar lista de flows disponibles
+    from langchain_integration.langgraph.orchestration import list_available_flows, get_flow_description
+    
+    # Mostrar flows disponibles
+    available_flows = list_available_flows()
+    print("📊 Flow types disponibles:")
+    for flow in available_flows:
+        description = get_flow_description(flow)
+        print(f"  • {flow:<15} - {description}")
+    
+    print("\n📝 Prompts de ejemplo:")
+    tests = [
         "Escribe una función en Python para calcular fibonacci",
-        "¿Qué es la inteligencia artificial?",
+        "¿Qué es la inteligencia artificial?", 
         "Cuéntame una historia corta sobre un robot",
         "Analiza las ventajas y desventajas de usar IA"
     ]
-    print("\nEjemplos de queries para probar:")
-    for i, q in enumerate(test_queries, 1):
-        print(f"{i}. {q}")
     
+    for i, q in enumerate(tests, 1):
+        print(f"  {i}. {q}")
+    
+    # Input del usuario
     user_input = input("\n📝 Tu prompt (o número de ejemplo): ").strip()
     if user_input.isdigit():
         idx = int(user_input) - 1
-        if 0 <= idx < len(test_queries):
-            user_input = test_queries[idx]
+        if 0 <= idx < len(tests):
+            user_input = tests[idx]
     
-    result = run_routing_agent(user_input)
+    # Selección de flow
+    print(f"\n🔄 Flows disponibles: {', '.join(available_flows)}")
+    flow_choice = input(f"🔄 Flow type [{available_flows[0]}]: ").strip() or available_flows[0]
+    
+    # Ejecutar
+    result = run_routing_agent(user_input, flow_type=flow_choice, verbose=True)
+    
+    # Mostrar resultado
     print("\n✨ Respuesta generada:")
-    print("-" * 50)
-    print(result['output'])
+    print("-" * 60)
+    print(result.get('output', ''))
+    
+    # Mostrar resumen del flow
+    from langchain_integration.langgraph.orchestration.flow_metrics import get_flow_summary
+    summary = get_flow_summary(result, flow_choice)
+    print(f"\n📊 Resumen: {summary}")

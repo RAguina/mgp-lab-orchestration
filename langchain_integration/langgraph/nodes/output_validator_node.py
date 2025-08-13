@@ -9,6 +9,39 @@ from langchain_integration.langgraph.agent_state import AgentState
 # Configurar logger específico para este nodo
 logger = logging.getLogger("output_validator")
 
+# -----------------------
+# Utilidades internas
+# -----------------------
+
+CODE_BLOCK_RE = re.compile(r"```.*?```", flags=re.DOTALL | re.IGNORECASE)
+
+def strip_code_blocks(text: str) -> str:
+    """Elimina bloques de código triple-backtick para validar solo el texto explicativo."""
+    return CODE_BLOCK_RE.sub("", text)
+
+def is_short_numeric_answer(text: str) -> bool:
+    """
+    Permite respuestas numéricas cortas (e.g., '7', '-3.14', '1,234.56').
+    Útil para queries tipo 'raiz cuadrada de 49'.
+    """
+    t = text.strip()
+    if len(t) > 12:  # si ya es largo, no lo tratamos como 'short numeric'
+        return False
+    return bool(re.fullmatch(r"[+\-]?\d[\d,\.]*", t))
+
+def is_repetitive_text(text: str) -> bool:
+    """Detecta si el texto es excesivamente repetitivo."""
+    words = text.lower().split()
+    if len(words) < 10:
+        return False
+    unique_words = len(set(words))
+    total_words = len(words)
+    return (unique_words / total_words) < 0.3  # Menos del 30% de palabras únicas
+
+# -----------------------
+# Nodo principal
+# -----------------------
+
 def output_validator_node(state: AgentState) -> AgentState:
     """
     Worker especializado en validación de outputs con logging detallado.
@@ -19,7 +52,7 @@ def output_validator_node(state: AgentState) -> AgentState:
     logger.info(f"[{node_id}] === OUTPUT VALIDATOR WORKER STARTED ===")
     
     messages = state.get("messages", [])
-    output = state.get("output", "")
+    output = state.get("output", "") or ""
     task_type = state.get("task_type", "chat")
     retry_count = state.get("retry_count", 0)
     execution_metrics = state.get("execution_metrics", {})
@@ -75,6 +108,10 @@ def output_validator_node(state: AgentState) -> AgentState:
     
     return result_state
 
+# -----------------------
+# Validaciones
+# -----------------------
+
 def perform_detailed_validation(output: str, task_type: str, node_id: str) -> Dict[str, Any]:
     """
     Realiza validación detallada del output según el tipo de tarea.
@@ -91,7 +128,7 @@ def perform_detailed_validation(output: str, task_type: str, node_id: str) -> Di
     
     # Validaciones básicas universales
     basic_checks = validate_basic_quality(output, node_id)
-    results.update(basic_checks)
+    merge_validation_results(results, basic_checks)
     
     # Validaciones específicas por tipo de tarea
     if task_type == "code":
@@ -121,40 +158,57 @@ def perform_detailed_validation(output: str, task_type: str, node_id: str) -> Di
 def validate_basic_quality(output: str, node_id: str) -> Dict[str, Any]:
     """Validaciones básicas que aplican a cualquier tipo de output."""
     results = {"checks_passed": [], "checks_failed": [], "warnings": []}
-    
-    # Longitud mínima
-    if len(output.strip()) >= 10:
-        results["checks_passed"].append("minimum_length")
-        logger.debug(f"[{node_id}] ✓ Minimum length check passed")
+
+    # 1) Longitud mínima — pero permite respuestas numéricas cortas
+    if len(output.strip()) >= 10 or is_short_numeric_answer(output):
+        results["checks_passed"].append("minimum_length_or_short_numeric")
+        logger.debug(f"[{node_id}] ✓ Minimum length (or short numeric) check passed")
     else:
         results["checks_failed"].append("minimum_length")
         logger.warning(f"[{node_id}] ✗ Output too short: {len(output)} chars")
-    
-    # Detectar errores obvios
-    error_patterns = [
-        r"error", r"exception", r"traceback", r"failed", 
-        r"ocurrió un problema", r"no se pudo", r"sin salida"
+
+    # 2) Errores obvios — ignorar bloques de código
+    text_no_code = strip_code_blocks(output).lower()
+
+    # Patrones “críticos” más estrictos
+    critical_error_patterns = [
+        r"\btraceback\b",
+        r"\bexception\b",
+        r"\bvalueerror\b",
+        r"\btypeerror\b",
+        r"\bkeyerror\b",
+        r"\bindexerror\b",
+        r"\bsegmentation fault\b",
+        r"\bmemoryerror\b",
+        r"\bassertionerror\b",
+        r"\bruntimeerror\b",
+        # línea que comienza con "error:" fuera de código
+        r"(^|\n)\s*error\s*:",
     ]
-    
-    for pattern in error_patterns:
-        if re.search(pattern, output.lower()):
+
+    found_critical = False
+    for pattern in critical_error_patterns:
+        if re.search(pattern, text_no_code):
             results["checks_failed"].append(f"error_pattern_{pattern}")
-            logger.warning(f"[{node_id}] ✗ Error pattern detected: {pattern}")
+            logger.warning(f"[{node_id}] ✗ Critical error pattern detected: {pattern}")
+            found_critical = True
             break
-    else:
-        results["checks_passed"].append("no_error_patterns")
-        logger.debug(f"[{node_id}] ✓ No error patterns detected")
-    
-    # Detectar texto repetitivo
+
+    if not found_critical:
+        results["checks_passed"].append("no_critical_error_patterns")
+        logger.debug(f"[{node_id}] ✓ No critical error patterns detected")
+
+    # 3) Detectar texto repetitivo
     if is_repetitive_text(output):
         results["warnings"].append("repetitive_text")
         logger.warning(f"[{node_id}] ⚠ Repetitive text detected")
-    
-    # Detectar texto incompleto
-    if output.strip().endswith(("...", ".", "y", "pero", "sin embargo")):
+
+    # 4) Detectar texto potencialmente incompleto (suavizado)
+    end = output.strip().lower()
+    if any(end.endswith(suffix) for suffix in (" y", " pero", " sin embargo")):
         results["warnings"].append("potentially_incomplete")
         logger.warning(f"[{node_id}] ⚠ Output might be incomplete")
-    
+
     return results
 
 def validate_code_output(output: str, node_id: str) -> Dict[str, Any]:
@@ -223,18 +277,6 @@ def validate_analysis_output(output: str, node_id: str) -> Dict[str, Any]:
     
     return results
 
-def is_repetitive_text(text: str) -> bool:
-    """Detecta si el texto es excesivamente repetitivo."""
-    words = text.lower().split()
-    if len(words) < 10:
-        return False
-    
-    # Contar palabras únicas vs totales
-    unique_words = len(set(words))
-    total_words = len(words)
-    
-    return (unique_words / total_words) < 0.3  # Menos del 30% de palabras únicas
-
 def decide_retry_logic(validation_results: Dict, retry_count: int, execution_metrics: Dict, 
                       task_type: str, node_id: str) -> bool:
     """Lógica inteligente para decidir si hacer retry."""
@@ -253,26 +295,32 @@ def decide_retry_logic(validation_results: Dict, retry_count: int, execution_met
     
     # Si hay errores críticos, retry
     critical_failures = [f for f in validation_results["checks_failed"] 
-                        if "error_pattern" in f or "minimum_length" in f]
+                        if f.startswith("error_pattern_") or f == "minimum_length"]
     if critical_failures:
         validation_results["retry_reason"] = f"Critical failures: {critical_failures}"
         logger.info(f"[{node_id}] Retry due to critical failures: {critical_failures}")
         return True
     
     # Si la ejecución fue muy rápida (posible error), retry
-    if execution_metrics.get("inference_time", 0) < 1.0:
+    # Nota: dependiendo de cómo se guarden métricas, puede venir en ms o s.
+    infer_time = execution_metrics.get("inference_time", execution_metrics.get("inference_time_sec", 0))
+    if infer_time and infer_time < 1.0:  # si está en segundos y <1s, sospechoso
         validation_results["retry_reason"] = "Suspiciously fast execution"
-        logger.info(f"[{node_id}] Retry due to fast execution: {execution_metrics.get('inference_time', 0)}s")
+        logger.info(f"[{node_id}] Retry due to fast execution: {infer_time}s")
         return True
     
     logger.info(f"[{node_id}] Validation passed, no retry needed")
     return False
 
+# -----------------------
+# Helpers
+# -----------------------
+
 def merge_validation_results(main_results: Dict, new_results: Dict):
     """Combina resultados de validación."""
-    main_results["checks_passed"].extend(new_results["checks_passed"])
-    main_results["checks_failed"].extend(new_results["checks_failed"])
-    main_results["warnings"].extend(new_results["warnings"])
+    main_results["checks_passed"].extend(new_results.get("checks_passed", []))
+    main_results["checks_failed"].extend(new_results.get("checks_failed", []))
+    main_results["warnings"].extend(new_results.get("warnings", []))
     
 def create_validation_summary(validation_results: Dict, should_retry: bool) -> List[str]:
     """Crea resumen legible de la validación."""

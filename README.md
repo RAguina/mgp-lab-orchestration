@@ -1,8 +1,9 @@
 # AI-Agent-Lab 🧪🤖
 
 Entry-Point:
+python -m langchain_integration.langgraph.routing_agent
 python -m local_models.llm_launcher
-
+.\venv\Activate\
 
 Laboratorio personal para experimentar con agentes LLM usando **LangChain**,
 **AutoGen** y modelos locales (Llama 3, Mistral 7B, DeepSeek 7B, DeepSeek-Coder,

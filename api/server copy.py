@@ -1,76 +1,68 @@
 # ai-agent-lab/api/server.py
+
 """
-Servidor principal - configuración, routers y ciclo de vida.
-V3: inyecta ProviderGateway en el execution_node al iniciar.
+Servidor principal - solo configuración y routing
 """
 
 import os
 import sys
-import uvicorn
-import logging
-from datetime import datetime
-from typing import Dict
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-# UTF-8 robusto
+# ✅ FIX: Configurar encoding UTF-8 globalmente
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict
+from datetime import datetime
+import logging
+from contextlib import asynccontextmanager
 
 # Agregar path del lab para imports
 LAB_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, LAB_ROOT)
 
-# Core locales
 from local_models.model_executor import ModelExecutor
 from local_models.model_manager import get_model_manager, MODELS
 from utils.gpu_guard import get_gpu_info
 
-# Gateway para inyectar en el nodo de ejecución
-from providers.provider_gateway import ProviderGateway
-import langchain_integration.langgraph.nodes.execution_node as execution_mod
-
-# Routers
+# ✅ IMPORTAR TODOS LOS ENDPOINTS
 from api.endpoints import inference, orchestrator, cache, system
 
-# Logging básico (no duplica handlers si ya existen)
+# Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("lab-api")
 
-# Instancias globales mínimas
+# Global instances
 executor = ModelExecutor(save_results=True)
 model_manager = get_model_manager()
-gateway = None  # se setea en startup
 
+# ✅ NUEVO: Lifespan context manager para reemplazar @app.on_event
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # STARTUP
-    global gateway
-    logger.info("AI Agent Lab API v3.0 starting up...")
+    # ✅ STARTUP
+    logger.info("AI Agent Lab API v2.0 starting up...")
     logger.info(f"Available models: {list(MODELS.keys())}")
     logger.info(f"GPU Info: {get_gpu_info()}")
-    logger.info("Features: Model caching, LangGraph orchestration, ProviderGateway")
-
-    # Inyección de dependencias
+    logger.info("Features: Modular endpoints, model caching, LangGraph orchestration")
+    
+    # Inicializar todos los servicios
     inference.init_inference_service(executor, model_manager)
     cache.init_cache_service(model_manager)
     system.init_system_service(executor, datetime.now())
-
-    # Inyectar ProviderGateway en execution_node
-    gateway = ProviderGateway(executor=executor)
-    execution_mod.set_gateway(gateway)
-
+    
     logger.info("All services initialized successfully")
+    
+    # ✅ App está corriendo
     yield
-
-    # SHUTDOWN
+    
+    # ✅ SHUTDOWN
     logger.info("AI Agent Lab API shutting down...")
     logger.info("Cleaning up model cache...")
     try:
@@ -79,12 +71,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Cleanup error during shutdown: {e}")
 
-
+# FastAPI app con lifespan
 app = FastAPI(
     title="AI Agent Lab API",
-    version="3.0.0",
-    description="API para modelos locales y orquestación de agentes con cache + gateway",
-    lifespan=lifespan
+    version="2.0.0",
+    description="API para modelos locales y orquestación de agentes con cache inteligente",
+    lifespan=lifespan  # ✅ NUEVO: usar lifespan en lugar de @app.on_event
 )
 
 # CORS
@@ -96,13 +88,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
+# ✅ REGISTRAR TODOS LOS ROUTERS
 app.include_router(inference.router)
 app.include_router(orchestrator.router)
 app.include_router(cache.router)
 app.include_router(system.router)
 
-# Schemas
+# Schemas para health
 class HealthResponse(BaseModel):
     status: str
     gpu_info: Dict
@@ -111,36 +103,40 @@ class HealthResponse(BaseModel):
     uptime: str
     services: Dict[str, str]
 
+# Global state para uptime
 start_time = datetime.now()
 
+# ✅ ENDPOINTS MÍNIMOS EN SERVER PRINCIPAL
 @app.get("/")
 async def root():
+    """Root endpoint con info básica de todos los servicios"""
     return {
         "service": "AI Agent Lab API",
-        "version": "3.0.0",
+        "version": "2.0.0",
         "status": "running",
         "endpoints": {
             "inference": "/inference",
-            "orchestrator": "/orchestrate",
+            "orchestrator": "/orchestrate", 
             "cache": "/cache",
             "system": "/system",
             "health": "/health"
         },
         "features": [
-            "model_caching",
-            "intelligent_memory_management",
+            "model_caching", 
+            "intelligent_memory_management", 
             "langgraph_orchestration",
-            "provider_gateway"
+            "modular_endpoints"
         ]
     }
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
+    """Health check consolidado de todos los servicios"""
     try:
         gpu_info = get_gpu_info()
         uptime = str(datetime.now() - start_time)
         memory_stats = model_manager.get_memory_stats()
-
+        
         return HealthResponse(
             status="healthy",
             gpu_info=gpu_info,
@@ -149,8 +145,8 @@ async def health():
             uptime=uptime,
             services={
                 "inference": "available",
-                "orchestrator": "available",
-                "cache": "available",
+                "orchestrator": "available" if orchestrator.ORCHESTRATOR_ENABLED else "disabled",
+                "cache": "available", 
                 "system": "available"
             }
         )
@@ -158,25 +154,28 @@ async def health():
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=500, detail="Health check failed")
 
+# ✅ MODELOS ENDPOINT (mantener aquí por ser central)
 @app.get("/models")
 async def list_models():
     """
-    Lista modelos disponibles (usa MODELS locales por ahora).
+    Lista todos los modelos disponibles
+    Mantener en server principal por ser información central
     """
     try:
         models_list = []
         for key, name in MODELS.items():
-            is_loaded = (
-                model_manager.is_model_loaded(key, "optimized") or
-                model_manager.is_model_loaded(key, "standard") or
-                model_manager.is_model_loaded(key, "streaming")
-            )
+            # Verificar si está cargado en cache
+            is_loaded = model_manager.is_model_loaded(key, "optimized") or \
+                       model_manager.is_model_loaded(key, "standard") or \
+                       model_manager.is_model_loaded(key, "streaming")
+            
             models_list.append({
                 "key": key,
                 "name": name,
                 "available": True,
                 "loaded": is_loaded
             })
+        
         return models_list
     except Exception as e:
         logger.error(f"Error listing models: {e}")
@@ -184,24 +183,26 @@ async def list_models():
 
 if __name__ == "__main__":
     import sys
-
+    
+    # ✅ FIX: Manejar argumentos de línea de comandos
     reload_excludes = [
         "logs/*",
-        "*.log",
-        "outputs/*",
+        "*.log", 
+        "outputs/*", 
         "metrics/*",
         "__pycache__/*",
         "*.pyc"
     ]
-
+    
+    # Agregar excludes adicionales desde argumentos
     exclude_args = [arg for arg in sys.argv if arg.startswith("--reload-exclude=")]
     for arg in exclude_args:
         pattern = arg.split("=", 1)[1].strip('"')
         if pattern not in reload_excludes:
             reload_excludes.append(pattern)
-
+    
     print(f"🔧 WatchFiles excludes: {reload_excludes}")
-
+    
     uvicorn.run(
         "server:app",
         host="127.0.0.1",
@@ -210,5 +211,5 @@ if __name__ == "__main__":
         log_level="info",
         reload_excludes=reload_excludes,
         reload_includes=["*.py"],
-        reload_dirs=["api/", "local_models/", "langchain_integration/", "providers/"]
+        reload_dirs=["api/", "local_models/"]  # ✅ FIX: Solo monitorear carpetas necesarias
     )
