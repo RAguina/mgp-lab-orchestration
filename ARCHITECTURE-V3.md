@@ -272,6 +272,25 @@ class GenerationResult(TypedDict):
 **Características:** Nodos configurables, templates dinámicos, terminal node detection
 **Depende de:** `graph_configs.py`, nodos existentes, `AgentState`
 
+{
+register_node(name, node_func) - Permite registrar nodos custom dinámicamente
+_create_configurable_execution_node() - Crea nodos de ejecución con configuración específica
+_find_terminal_nodes(config) - Detecta nodos sin edges salientes para conectar a END
+build_routing_graph(flow_type) - Función de conveniencia para compatibilidad legacy
+
+Gestión del estado Challenge Flow:
+
+Guarda outputs en estructura state["challenge_flow"][node_id]
+Persiste resultados en JSON: outputs/challenge_flows/{execution_id}.json
+Mantiene compatibilidad con {node_id}_output keys
+
+Routing condicional:
+
+route_after_analysis() - Decide si usar monitor basado en task_type
+Integración con route_after_validation() del validator node
+Soporte para should_include_history() del history node
+}
+
 ### langchain_integration/langgraph/orchestration/graph_configs.py
 
 **Rol:** Configuraciones declarativas de flujos - sistema n8n-like.
@@ -284,6 +303,20 @@ class GenerationResult(TypedDict):
 * `get_multi_perspective_flow_config()` - Config paralelo + síntesis
 * `format_prompt_template()` - Templates con contexto dinámico
 **Escalabilidad:** Preparado para JSON configs y base de datos
+
+**Flujos soportados:**
+- `linear` - Flujo tradicional secuencial
+- `challenge` - Debate creator→challenger→refiner
+- `multi_perspective` - Análisis paralelo con síntesis (próximamente)
+
+**Persistencia:**
+- Challenge flows se guardan en `outputs/challenge_flows/`
+- Formato: `{execution_id}.json` con estructura completa
+
+**Extensibilidad:**
+- Nuevos flujos se agregan en `FLOW_CONFIGS`
+- Nodos custom via `GraphBuilder.register_node()`
+- Templates soportan cualquier variable del estado
 
 ### langchain_integration/langgraph/orchestration/flow_metrics.py
 

@@ -1,5 +1,6 @@
 # providers/provider_gateway.py
 import time
+import uuid
 import logging
 from typing import Dict, Any, Optional, List, Literal, TypedDict
 
@@ -13,12 +14,17 @@ logger = logging.getLogger("provider_gateway")
 # Tipos formales (compat V4)
 # -----------------------
 
+FlowType = Literal["simple", "linear", "challenge", "multi_perspective"]
+
 class GenerationRequest(TypedDict, total=False):
     model_key: str
     strategy: str
     prompt: str
     max_tokens: int
     temperature: float
+    # Nuevos (opcionales, retrocompatibles)
+    flow_type: FlowType
+    execution_id: str
 
 class ExecutionTraceEntry(TypedDict, total=False):
     step: int
@@ -43,6 +49,9 @@ class GenerationResult(TypedDict, total=False):
     strategy_used: str
     execution_trace: List[ExecutionTraceEntry]
     blocked: bool
+    # Nuevos (trazabilidad end-to-end)
+    flow_type: FlowType
+    execution_id: str
 
 # -----------------------
 # Gateway
@@ -95,7 +104,12 @@ class ProviderGateway:
     # -------- Normalización segura --------
     @staticmethod
     def _ensure_result_shape(
-        provider_key: str, model_key: str, strategy: str, res: BaseGenerationResult
+        provider_key: str,
+        model_key: str,
+        strategy: str,
+        res: BaseGenerationResult,
+        flow_type: Optional[FlowType],
+        execution_id: Optional[str],
     ) -> GenerationResult:
         """
         Asegura que el resultado tenga todos los campos del contrato V4,
@@ -107,7 +121,7 @@ class ProviderGateway:
         output = res.get("output")
         error = res.get("error")
 
-        return {
+        out: GenerationResult = {
             "success": success,
             "output": output,
             "error": error,
@@ -121,8 +135,18 @@ class ProviderGateway:
             "model_used": res.get("model_used", model_key),
             "strategy_used": res.get("strategy_used", strategy),
             "execution_trace": [],  # el Gateway lo rellena abajo
-            "blocked": False
+            "blocked": False,
         }
+        # Trazabilidad: mantener aunque el provider no lo incluya
+        if "flow_type" in res:
+            out["flow_type"] = res["flow_type"]  # type: ignore
+        elif flow_type is not None:
+            out["flow_type"] = flow_type  # type: ignore
+        if "execution_id" in res:
+            out["execution_id"] = res["execution_id"]  # type: ignore
+        elif execution_id is not None:
+            out["execution_id"] = execution_id  # type: ignore
+        return out
 
     # -------- Operación principal --------
     def generate(self, req: GenerationRequest) -> GenerationResult:
@@ -131,6 +155,8 @@ class ProviderGateway:
         prompt      = req.get("prompt", "")
         max_tokens  = req.get("max_tokens", 256)
         temperature = req.get("temperature", 0.7)
+        flow_type   = req.get("flow_type") or "simple"  # por compatibilidad
+        execution_id = req.get("execution_id") or str(uuid.uuid4())
 
         # Validación mínima
         if not prompt:
@@ -143,7 +169,9 @@ class ProviderGateway:
                 "model_used": model_key,
                 "strategy_used": strategy,
                 "execution_trace": [],
-                "blocked": False
+                "blocked": False,
+                "flow_type": flow_type,         # mantener trazabilidad incluso en error
+                "execution_id": execution_id,
             }
 
         provider_key = self._pick_provider(req)
@@ -171,7 +199,9 @@ class ProviderGateway:
                 "model_used": model_key,
                 "strategy_used": strategy,
                 "execution_trace": trace,
-                "blocked": True
+                "blocked": True,
+                "flow_type": flow_type,
+                "execution_id": execution_id,
             }
 
         provider = self.providers.get(provider_key)
@@ -187,7 +217,9 @@ class ProviderGateway:
                 "model_used": model_key,
                 "strategy_used": strategy,
                 "execution_trace": trace,
-                "blocked": False
+                "blocked": False,
+                "flow_type": flow_type,
+                "execution_id": execution_id,
             }
 
         # Ejecutar
@@ -200,6 +232,9 @@ class ProviderGateway:
                 "prompt": prompt,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
+                # pista para logging/observabilidad del provider
+                "flow_type": flow_type,          # type: ignore
+                "execution_id": execution_id,    # type: ignore
             }
             pres: BaseGenerationResult = provider.generate(provider_req)
             elapsed_s = time.time() - t0
@@ -217,14 +252,18 @@ class ProviderGateway:
                 "model_used": model_key,
                 "strategy_used": strategy,
                 "execution_trace": trace,
-                "blocked": False
+                "blocked": False,
+                "flow_type": flow_type,
+                "execution_id": execution_id,
             }
 
         # Éxito: resetear contador de fallos
         self._reset_failures(provider_id)
 
         # Normalizar al contrato V4
-        out: GenerationResult = self._ensure_result_shape(provider_key, model_key, strategy, pres)
+        out: GenerationResult = self._ensure_result_shape(
+            provider_key, model_key, strategy, pres, flow_type, execution_id
+        )
 
         # Asegurar total_time_ms razonable aunque el provider no lo haya dado
         t_ms = out["timings_ms"]
@@ -243,4 +282,7 @@ class ProviderGateway:
         })
 
         out["execution_trace"] = trace
+        # Reafirmar trazabilidad (por si un provider sobrescribió)
+        out["flow_type"] = out.get("flow_type", flow_type)  # type: ignore
+        out["execution_id"] = out.get("execution_id", execution_id)  # type: ignore
         return out
