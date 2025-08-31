@@ -1,12 +1,24 @@
 # AI-Agent-Lab 🧪🤖
 
+> **Arquitectura:** [ARCHITECTURE-V4.md](ARCHITECTURE-V4.md) ← **DOCUMENTACIÓN PRINCIPAL**
+
 Entry-Point:
 python -m langchain_integration.langgraph.routing_agent
 python -m local_models.llm_launcher
 .\venv\Activate\
 
+Sistema de orquestación de LLMs locales con flujos configurables de deliberación entre modelos.
+
+## ✨ Features
+
+- ✅ **Challenge Flow** - LLM Deliberation (Creator→Challenger→Refiner)
+- ✅ **Linear Flow** - Traditional pipeline with validation
+- ✅ **Local Models** - HuggingFace integration (Mistral, Llama3, DeepSeek)
+- ✅ **REST API** - FastAPI endpoints for integration
+- ✅ **Smart Caching** - Intelligent model loading (51s → 19s)
+
 Laboratorio personal para experimentar con agentes LLM usando **LangChain**,
-**AutoGen** y modelos locales (Llama 3, Mistral 7B, DeepSeek 7B, DeepSeek-Coder,
+**LangGraph** y **FastAPI** y modelos locales (Llama 3, Mistral 7B, DeepSeek 7B, DeepSeek-Coder,
 etc.).
 
 ## Requisitos
