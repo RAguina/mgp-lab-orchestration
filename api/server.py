@@ -63,12 +63,14 @@ async def lifespan(app: FastAPI):
     cache.init_cache_service(model_manager)
     system.init_system_service(executor, datetime.now())
 
-    # Inyectar ProviderGateway en execution_node (Arquitectura Modular)
+    # Crear ProviderGateway con arquitectura modular
     from providers.local.local_provider import LocalProvider
     
     local_provider = LocalProvider(executor=executor)
     gateway = ProviderGateway(providers={"local": local_provider})
-    execution_mod.set_gateway(gateway)
+    
+    # Gateway se inyecta vía AgentState.services en routing_agent
+    # Esto hace el gateway disponible globalmente para el lab
 
     logger.info("All services initialized successfully")
     yield

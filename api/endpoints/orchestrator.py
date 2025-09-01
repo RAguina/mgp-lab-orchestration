@@ -88,8 +88,8 @@ async def run_orchestrator_endpoint(request: OrchestratorRequest):
         orchestrator_result = run_orchestrator(request.prompt)
         total_time = time.time() - start_time
         
-        # Verificar que el resultado sea válido
-        if not orchestrator_result or not orchestrator_result.get("output"):
+        # Verificar que el resultado sea válido - permitir outputs vacíos para manejo de errores
+        if not orchestrator_result:
             raise HTTPException(
                 status_code=500,
                 detail="Orchestrator returned empty result"

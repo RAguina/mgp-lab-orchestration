@@ -51,16 +51,9 @@ def run_routing_agent(
     orchestrator_logger.info(f"[{execution_id}] Verbose: {verbose}")
 
     try:
-        # Inyectar Gateway en el execution_node (si existe)
+        # Gateway injection ahora se hace vía services en AgentState
         if gateway is None:
             gateway = ProviderGateway()
-        
-        # Verificar si set_gateway existe antes de llamarlo
-        if hasattr(execution_mod, 'set_gateway'):
-            execution_mod.set_gateway(gateway)
-            orchestrator_logger.info(f"[{execution_id}] Gateway injected successfully")
-        else:
-            orchestrator_logger.warning(f"[{execution_id}] execution_node.set_gateway not found, skipping injection")
 
         # Construir grafo usando el builder modularizado
         t0 = time.time()
@@ -68,9 +61,10 @@ def run_routing_agent(
         build_ms = int((time.time() - t0) * 1000)
         orchestrator_logger.info(f"[{execution_id}] Graph built in {build_ms} ms")
 
-        # Estado inicial
-        initial_state = create_initial_state(user_input)
-        orchestrator_logger.info(f"[{execution_id}] Initial state fields: {len(initial_state)}")
+        # Estado inicial con services injection
+        services = {"gateway": gateway} if gateway else {}
+        initial_state = create_initial_state(user_input, services=services)
+        orchestrator_logger.info(f"[{execution_id}] Initial state fields: {len(initial_state)} services: {list(services.keys())}")
 
         if verbose:
             print(f"\n🤖 Ejecutando agente con routing... [ID: {execution_id}]")

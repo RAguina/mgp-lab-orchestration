@@ -21,16 +21,25 @@ class AgentState(TypedDict, total=False):
     generation_result: Dict[str, Any]
     execution_metrics: Dict[str, Any]
 
-def create_initial_state(user_input: str, request_id: Optional[str] = None) -> AgentState:
+    # V4: Dependency Injection via services
+    services: Dict[str, Any]   # gateway, cache, metrics, etc.
+
+def create_initial_state(
+    user_input: str, 
+    request_id: Optional[str] = None,
+    services: Optional[Dict[str, Any]] = None
+) -> AgentState:
     """
     Crea el estado inicial del agente con valores por defecto.
     - version: versión de la estructura del estado
-    - request_id: identificador único de la petición
+    - request_id: identificador único de la petición  
+    - services: dependency injection (gateway, cache, metrics, etc.)
     """
     return {
-        "version": "v3.0.0",
+        "version": "v4.0.0",  # Updated for services support
         "request_id": request_id or "",
         "input": user_input,
         "messages": [],
         "strategy": "optimized",
+        "services": services or {},
     }
