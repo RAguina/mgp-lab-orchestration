@@ -58,6 +58,7 @@ async def orchestrator_health():
     }
 
 @router.post("/", response_model=OrchestratorResponse)
+@router.post("", response_model=OrchestratorResponse)
 async def run_orchestrator_endpoint(request: OrchestratorRequest):
     """
     ✅ NUEVO ENDPOINT
