@@ -23,17 +23,20 @@ class AgentState(TypedDict, total=False):
 
     # V4: Dependency Injection via services
     services: Dict[str, Any]   # gateway, cache, metrics, etc.
+    requested_model: str       # modelo específico solicitado por el usuario
 
 def create_initial_state(
     user_input: str, 
     request_id: Optional[str] = None,
-    services: Optional[Dict[str, Any]] = None
+    services: Optional[Dict[str, Any]] = None,
+    requested_model: Optional[str] = None
 ) -> AgentState:
     """
     Crea el estado inicial del agente con valores por defecto.
     - version: versión de la estructura del estado
     - request_id: identificador único de la petición  
     - services: dependency injection (gateway, cache, metrics, etc.)
+    - requested_model: modelo específico solicitado por el usuario
     """
     return {
         "version": "v4.0.0",  # Updated for services support
@@ -42,4 +45,5 @@ def create_initial_state(
         "messages": [],
         "strategy": "optimized",
         "services": services or {},
+        "requested_model": requested_model or "mistral7b",  # Default VRAM-safe model
     }

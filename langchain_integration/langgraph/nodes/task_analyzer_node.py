@@ -42,18 +42,31 @@ def task_analyzer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     messages.append(f"[ANALYZER] Keywords encontradas: {detected_keywords}")
 
     # --- Selección de modelo ---
-    selected_model = "mistral7b"
-    selection_result = ""
-    try:
-        selector = ModelSelectorTool()
-        selection_result = selector.run(prompt)
-        if "Modelo seleccionado:" in selection_result:
-            selected_model = selection_result.split("Modelo seleccionado:")[1].split("\n")[0].strip()
-    except Exception as e:
-        logger.error(f"[{node_id}] Model selector failed: {e}")
-        selection_result = f"Error en selección: {str(e)}"
-
-    messages.append(f"[ANALYZER] Modelo seleccionado: {selected_model}")
+    # PRIORITY 1: User specified model (always respect)
+    requested_model = state.get("requested_model")
+    if requested_model and requested_model != "mistral7b":  # Only log if different from default
+        selected_model = requested_model
+        messages.append(f"[ANALYZER] Using user-requested model: {selected_model}")
+        selection_result = f"Using user-specified model: {selected_model}"
+    else:
+        # PRIORITY 2: Intelligent selection only if no model specified
+        selected_model = "mistral7b"  # VRAM-safe default
+        selection_result = ""
+        try:
+            selector = ModelSelectorTool()
+            selection_result = selector.run(prompt)
+            if "Modelo seleccionado:" in selection_result:
+                suggested_model = selection_result.split("Modelo seleccionado:")[1].split("\n")[0].strip()
+                # Only use suggestion if it's VRAM-safe or same as default
+                if suggested_model == "mistral7b":
+                    selected_model = suggested_model
+                else:
+                    messages.append(f"[ANALYZER] Suggested {suggested_model}, but using VRAM-safe default: {selected_model}")
+        except Exception as e:
+            logger.error(f"[{node_id}] Model selector failed: {e}")
+            selection_result = f"Error en selección, using default: {str(e)}"
+        
+        messages.append(f"[ANALYZER] Modelo seleccionado: {selected_model}")
 
     # --- Estrategia ---
     strategy_mapping = {

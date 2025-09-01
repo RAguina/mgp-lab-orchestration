@@ -84,9 +84,9 @@ async def run_orchestrator_endpoint(request: OrchestratorRequest):
         logger.info(f"[{execution_id}]   Agents: {request.agents}")
         logger.info(f"[{execution_id}]   Tools: {request.tools}")
         
-        # ✅ LLAMAR A TU FUNCIÓN EXISTENTE (sin modificar)
+        # ✅ LLAMAR A TU FUNCIÓN EXISTENTE con modelo especificado
         start_time = time.time()
-        orchestrator_result = run_orchestrator(request.prompt)
+        orchestrator_result = run_orchestrator(request.prompt, model=request.model)
         total_time = time.time() - start_time
         
         # Verificar que el resultado sea válido - permitir outputs vacíos para manejo de errores

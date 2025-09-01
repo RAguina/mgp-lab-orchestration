@@ -28,6 +28,7 @@ def run_routing_agent(
     user_input: str, 
     gateway: ProviderGateway | None = None, 
     flow_type: str = "linear",
+    model: str = "mistral7b",
     verbose: bool = True
 ) -> Dict[str, Any]:
     """
@@ -37,6 +38,7 @@ def run_routing_agent(
         user_input: Prompt del usuario
         gateway: Gateway de modelos (opcional, usa default si None)
         flow_type: Tipo de flujo ("linear", "challenge", etc.)
+        model: Modelo específico solicitado por el usuario
         verbose: Si mostrar información detallada
     
     Returns:
@@ -61,9 +63,9 @@ def run_routing_agent(
         build_ms = int((time.time() - t0) * 1000)
         orchestrator_logger.info(f"[{execution_id}] Graph built in {build_ms} ms")
 
-        # Estado inicial con services injection
+        # Estado inicial con services injection y modelo solicitado
         services = {"gateway": gateway} if gateway else {}
-        initial_state = create_initial_state(user_input, services=services)
+        initial_state = create_initial_state(user_input, services=services, requested_model=model)
         orchestrator_logger.info(f"[{execution_id}] Initial state fields: {len(initial_state)} services: {list(services.keys())}")
 
         if verbose:
@@ -131,13 +133,14 @@ def run_routing_agent(
         }
 
 
-def run_orchestrator(prompt: str, flow_type: str = "linear") -> Dict[str, Any]:
+def run_orchestrator(prompt: str, flow_type: str = "linear", model: str = "mistral7b") -> Dict[str, Any]:
     """
     Wrapper público para backend: ejecuta el routing_agent y produce flow+metrics.
     
     Args:
         prompt: Prompt del usuario
         flow_type: Tipo de flujo a ejecutar
+        model: Modelo específico solicitado por el usuario
     
     Returns:
         Dict con flow, output y metrics para el frontend
@@ -149,7 +152,7 @@ def run_orchestrator(prompt: str, flow_type: str = "linear") -> Dict[str, Any]:
 
     try:
         # Ejecutar el routing agent
-        full_state = run_routing_agent(prompt, flow_type=flow_type, verbose=False)
+        full_state = run_routing_agent(prompt, flow_type=flow_type, model=model, verbose=False)
         
         # Construir respuesta usando flow_metrics
         result = build_api_response(full_state, flow_type)
