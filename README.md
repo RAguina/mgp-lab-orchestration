@@ -2,10 +2,12 @@
 
 > **Arquitectura:** [ARCHITECTURE-V4.md](ARCHITECTURE-V4.md) ← **DOCUMENTACIÓN PRINCIPAL**
 
-Entry-Point:
+1)
+.\venv\Activate\
+
+2)Entry-Point:
 python -m langchain_integration.langgraph.routing_agent
 python -m local_models.llm_launcher
-.\venv\Activate\
 
 Sistema de orquestación de LLMs locales con flujos configurables de deliberación entre modelos.
 
@@ -57,3 +59,7 @@ set PYTHONIOENCODING=utf-8
 
 
 python api/server.py --reload-exclude="logs/*" --reload-exclude="*.log" --reload-exclude="outputs/*" --reload-exclude="metrics/*"
+
+
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope 
+  Process

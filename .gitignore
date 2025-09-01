@@ -24,6 +24,12 @@ outputs/
 .env*
 *.env
 
+# ⬇️ Documentación temporal/backup
+docs/backup/
+docs/temp/
+*requirements-clean.txt
+*requirements-corrupted*.txt
+
 # ⬇️ Otros artefactos
 dist/
 build/

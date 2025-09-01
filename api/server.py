@@ -63,8 +63,11 @@ async def lifespan(app: FastAPI):
     cache.init_cache_service(model_manager)
     system.init_system_service(executor, datetime.now())
 
-    # Inyectar ProviderGateway en execution_node
-    gateway = ProviderGateway(executor=executor)
+    # Inyectar ProviderGateway en execution_node (Arquitectura Modular)
+    from providers.local.local_provider import LocalProvider
+    
+    local_provider = LocalProvider(executor=executor)
+    gateway = ProviderGateway(providers={"local": local_provider})
     execution_mod.set_gateway(gateway)
 
     logger.info("All services initialized successfully")
