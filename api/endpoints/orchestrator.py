@@ -35,6 +35,12 @@ class OrchestratorRequest(BaseModel):
     verbose: Optional[bool] = Field(False, description="Logging detallado")
     enable_history: Optional[bool] = Field(True, description="Incluir historial")
     retry_on_error: Optional[bool] = Field(True, description="Reintentar en error")
+    
+    # RAG Configuration (retrocompatible)
+    rag_config: Optional[Dict[str, Any]] = Field({}, description="Configuración RAG específica")
+    embedding_model: Optional[str] = Field(None, description="Modelo de embeddings (bge-m3, e5, etc.)")
+    vector_store: Optional[str] = Field(None, description="Base vectorial (milvus, weaviate, pinecone)")
+    retrieval_config: Optional[Dict[str, Any]] = Field({}, description="Config de retrieval (top_k, threshold, etc.)")
 
 class OrchestratorResponse(BaseModel):
     id: str
@@ -55,6 +61,9 @@ async def orchestrator_health():
         "endpoint": "/orchestrate",
         "methods": ["POST"],
         "description": "LangGraph orchestrator endpoint",
+        "supported_flows": ["linear", "challenge", "rag_simple", "rag_advanced", "rag_hybrid"] if ORCHESTRATOR_ENABLED else [],
+        "supported_embeddings": ["bge-m3", "e5-large", "sentence-transformers"],
+        "supported_vector_stores": ["milvus", "weaviate", "pinecone", "chroma"],
         "workers": ["task_analyzer", "resource_monitor", "executor", "validator", "summarizer"] if ORCHESTRATOR_ENABLED else []
     }
 
@@ -86,12 +95,34 @@ async def run_orchestrator_endpoint(request: OrchestratorRequest):
         logger.info(f"[{execution_id}]   Agents: {request.agents}")
         logger.info(f"[{execution_id}]   Tools: {request.tools}")
         
+        # RAG-specific logging
+        if request.embedding_model or request.vector_store or request.rag_config:
+            logger.info(f"[{execution_id}] RAG Configuration:")
+            if request.embedding_model:
+                logger.info(f"[{execution_id}]   Embedding: {request.embedding_model}")
+            if request.vector_store:
+                logger.info(f"[{execution_id}]   Vector Store: {request.vector_store}")
+            if request.rag_config:
+                logger.info(f"[{execution_id}]   RAG Config: {request.rag_config}")
+        
+        # Prepare RAG configuration for Lab
+        rag_tools = []
+        if request.embedding_model:
+            rag_tools.append(f"embedding_{request.embedding_model.replace('-', '_')}")
+        if request.vector_store:
+            rag_tools.append(f"vectorstore_{request.vector_store}")
+        
+        # Merge RAG tools with existing tools
+        all_tools = list(request.tools) + rag_tools
+        
         # ✅ LLAMAR A TU FUNCIÓN EXISTENTE con modelo y flow_type especificados
         start_time = time.time()
         orchestrator_result = run_orchestrator(
             request.prompt, 
             model=request.model,
-            flow_type=request.flow_type
+            flow_type=request.flow_type,
+            tools=all_tools if all_tools else None,
+            rag_config=request.rag_config if request.rag_config else None
         )
         total_time = time.time() - start_time
         

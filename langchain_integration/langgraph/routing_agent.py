@@ -133,7 +133,7 @@ def run_routing_agent(
         }
 
 
-def run_orchestrator(prompt: str, flow_type: str = "linear", model: str = "mistral7b") -> Dict[str, Any]:
+def run_orchestrator(prompt: str, flow_type: str = "linear", model: str = "mistral7b", tools: list = None, rag_config: dict = None) -> Dict[str, Any]:
     """
     Wrapper público para backend: ejecuta el routing_agent y produce flow+metrics.
     
@@ -141,6 +141,8 @@ def run_orchestrator(prompt: str, flow_type: str = "linear", model: str = "mistr
         prompt: Prompt del usuario
         flow_type: Tipo de flujo a ejecutar
         model: Modelo específico solicitado por el usuario
+        tools: Lista de herramientas/tools a usar (incluye RAG tools)
+        rag_config: Configuración específica de RAG
     
     Returns:
         Dict con flow, output y metrics para el frontend
@@ -149,9 +151,16 @@ def run_orchestrator(prompt: str, flow_type: str = "linear", model: str = "mistr
     orchestrator_logger.info(f"[{api_call_id}] API run_orchestrator")
     orchestrator_logger.info(f"[{api_call_id}] Prompt: '{prompt[:100]}...'")
     orchestrator_logger.info(f"[{api_call_id}] Flow type: {flow_type}")
+    
+    # Log RAG configuration if present
+    if tools:
+        orchestrator_logger.info(f"[{api_call_id}] Tools: {tools}")
+    if rag_config:
+        orchestrator_logger.info(f"[{api_call_id}] RAG config: {rag_config}")
 
     try:
-        # Ejecutar el routing agent
+        # TODO: Pass tools and rag_config to routing agent once RAG flows are implemented
+        # For now, fallback to standard execution
         full_state = run_routing_agent(prompt, flow_type=flow_type, model=model, verbose=False)
         
         # Construir respuesta usando flow_metrics
