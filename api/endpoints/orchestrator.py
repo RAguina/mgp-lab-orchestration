@@ -29,6 +29,7 @@ except ImportError as e:
 class OrchestratorRequest(BaseModel):
     prompt: str = Field(..., description="Prompt para el orquestador")
     model: str = Field("mistral7b", description="Modelo base a usar")
+    flow_type: str = Field("challenge", description="Tipo de flujo a ejecutar")
     agents: Optional[List[str]] = Field([], description="Lista de agentes")
     tools: Optional[List[str]] = Field([], description="Lista de herramientas")
     verbose: Optional[bool] = Field(False, description="Logging detallado")
@@ -81,12 +82,17 @@ async def run_orchestrator_endpoint(request: OrchestratorRequest):
         logger.info(f"[{execution_id}] Orchestrator request:")
         logger.info(f"[{execution_id}]   Prompt: {request.prompt[:100]}...")
         logger.info(f"[{execution_id}]   Model: {request.model}")
+        logger.info(f"[{execution_id}]   Flow Type: {request.flow_type}")
         logger.info(f"[{execution_id}]   Agents: {request.agents}")
         logger.info(f"[{execution_id}]   Tools: {request.tools}")
         
-        # ✅ LLAMAR A TU FUNCIÓN EXISTENTE con modelo especificado
+        # ✅ LLAMAR A TU FUNCIÓN EXISTENTE con modelo y flow_type especificados
         start_time = time.time()
-        orchestrator_result = run_orchestrator(request.prompt, model=request.model)
+        orchestrator_result = run_orchestrator(
+            request.prompt, 
+            model=request.model,
+            flow_type=request.flow_type
+        )
         total_time = time.time() - start_time
         
         # Verificar que el resultado sea válido - permitir outputs vacíos para manejo de errores

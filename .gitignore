@@ -30,6 +30,9 @@ docs/temp/
 *requirements-clean.txt
 *requirements-corrupted*.txt
 
+# ⬇️ Tests obsoletos
+tests_archive/
+
 # ⬇️ Otros artefactos
 dist/
 build/
