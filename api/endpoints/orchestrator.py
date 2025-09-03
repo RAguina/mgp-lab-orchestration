@@ -95,15 +95,48 @@ async def run_orchestrator_endpoint(request: OrchestratorRequest):
         logger.info(f"[{execution_id}]   Agents: {request.agents}")
         logger.info(f"[{execution_id}]   Tools: {request.tools}")
         
-        # RAG-specific logging
-        if request.embedding_model or request.vector_store or request.rag_config:
-            logger.info(f"[{execution_id}] RAG Configuration:")
+        # RAG validation and processing
+        is_rag_request = request.embedding_model or request.vector_store or request.rag_config
+        
+        if is_rag_request:
+            logger.info(f"[{execution_id}] RAG Request detected:")
             if request.embedding_model:
                 logger.info(f"[{execution_id}]   Embedding: {request.embedding_model}")
             if request.vector_store:
                 logger.info(f"[{execution_id}]   Vector Store: {request.vector_store}")
             if request.rag_config:
                 logger.info(f"[{execution_id}]   RAG Config: {request.rag_config}")
+            
+            # Check if RAG flows are available
+            from langchain_integration.langgraph.orchestration import list_available_flows
+            available_flows = list_available_flows()
+            rag_flows = [f for f in available_flows if f.startswith('rag_')]
+            
+            if not rag_flows and request.flow_type.startswith('rag_'):
+                logger.warning(f"[{execution_id}] RAG flow '{request.flow_type}' requested but not implemented")
+                logger.info(f"[{execution_id}] Using MOCK RAG with 'challenge' flow")
+                
+                # Use mock RAG implementation
+                try:
+                    from langchain_integration.tools.rag_mock import mock_rag_retrieval
+                    rag_result = mock_rag_retrieval(
+                        query=request.prompt,
+                        embedding_model=request.embedding_model or "bge-m3",
+                        vector_store=request.vector_store or "milvus", 
+                        rag_config=request.rag_config or {}
+                    )
+                    
+                    request.prompt = rag_result["enriched_prompt"]
+                    request.flow_type = "challenge"  # Safe fallback
+                    
+                    logger.info(f"[{execution_id}] Mock RAG applied: {rag_result['metadata']['documents_found']} docs retrieved")
+                    
+                except Exception as e:
+                    logger.error(f"[{execution_id}] Mock RAG failed: {e}")
+                    # Ultimate fallback: simple context annotation
+                    enriched_prompt = f"[RAG Context Request: {request.embedding_model or 'default'} + {request.vector_store or 'default'}]\n\n{request.prompt}"
+                    request.prompt = enriched_prompt
+                    request.flow_type = "challenge"
         
         # Prepare RAG configuration for Lab
         rag_tools = []
