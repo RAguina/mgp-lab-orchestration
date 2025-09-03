@@ -62,28 +62,61 @@ async def search_rag(
     top_k: int = 5,
     ef_search: int = 96,  # ✅ Tuneable HNSW parameter
     include_full_content: bool = False,  # ✅ P95 stable: uri+excerpt by default
+    use_reranker: bool = True,  # ✅ Reranker ON by default for quality
     filters: dict | None = None,  # ✅ Future: metadata filtering 
     mmr_lambda: float | None = None,  # ✅ Future: MMR diversification
     workspace_id: str = Header(None)  # ✅ Multi-tenancy
 ):
-    # Vector search + rerank with tuneable parameters
-    # For P95 stable performance, default returns uri + excerpt + metadata
-    # Full content only when include_full_content=true
-    
-    # Get embedder and search
-    embedder = BGEM3EmbeddingProvider()
+    """✅ Vector search + rerank with tuneable parameters"""
+    # ✅ C) Efficiency: Use singleton/cached instances (not create every request)
+    embedder = get_embedding_manager().get_provider("bge-m3")  # Cached
     query_embedding = embedder.embed_query(query)
     
-    # Search with parameters
-    embed_dim = embedder.model.get_sentence_embedding_dimension()
-    rag_store = MilvusRAGStore(document_store=minio_store, embed_dim=embed_dim)
+    # Search with parameters (top-50 for reranking, or top_k if no rerank)
+    search_top_k = min(50, top_k * 10) if use_reranker else top_k
+    rag_store = get_vector_store_manager().get_store("milvus")  # Cached
     results = rag_store.search(
         rag_id=rag_id,
         query_embedding=query_embedding,
-        top_k=top_k,
+        top_k=search_top_k,
         ef_search=ef_search,
-        include_full_content=include_full_content
+        include_full_content=include_full_content or use_reranker  # Need content for reranker
     )
+    
+    # ✅ B) Apply reranker as per Golden Path (top-50 → top-5)
+    if use_reranker and results:
+        reranker = get_reranker_manager().get_reranker("bge-base")  # Cached
+        # Prepare input: use content if available, fallback to excerpt
+        rerank_input = []
+        for r in results:
+            content = r.get("content") or r.get("excerpt", "")
+            rerank_input.append({**r, "content": content})
+            
+        reranked = reranker.rerank(
+            query, 
+            rerank_input, 
+            top_k=min(top_k, len(results)), 
+            max_passages=min(64, len(results))
+        )
+        final_results = reranked
+    else:
+        final_results = results[:top_k]
+    
+    # ✅ A) Return structured response (was missing!)
+    return {
+        "rag_id": rag_id,
+        "query": query,
+        "params": {
+            "top_k": top_k,
+            "ef_search": ef_search,
+            "include_full_content": include_full_content,
+            "use_reranker": use_reranker,
+            "rerank_applied": use_reranker and len(results) > 0
+        },
+        "candidates": final_results,
+        "total_found": len(results),
+        "returned_count": len(final_results)
+    }
 
 @router.post("/rag/{rag_id}/query")  
 async def query_rag(rag_id: str, query: str, model: str = "mistral7b", workspace_id: str = Header(None)):
@@ -198,6 +231,75 @@ class BGEM3EmbeddingProvider:
         """Generate normalized query embedding"""  
         embedding = self.model.encode([query], normalize_embeddings=True)
         return embedding[0].tolist()
+
+# ✅ C) Singleton managers for efficiency
+class EmbeddingManager:
+    """Cached embedding providers to avoid recreating heavy models"""
+    _instance = None
+    _providers = {}
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+        
+    def get_provider(self, model_name: str):
+        if model_name not in self._providers:
+            if model_name == "bge-m3":
+                self._providers[model_name] = BGEM3EmbeddingProvider()
+            else:
+                raise ValueError(f"Unknown embedding model: {model_name}")
+        return self._providers[model_name]
+
+# Global singleton accessors
+def get_embedding_manager() -> EmbeddingManager:
+    return EmbeddingManager.get_instance()
+
+class VectorStoreManager:
+    """Cached vector store instances"""
+    _instance = None
+    _stores = {}
+    
+    @classmethod  
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+        
+    def get_store(self, store_type: str):
+        if store_type not in self._stores:
+            if store_type == "milvus":
+                # Use default config - could be made configurable
+                self._stores[store_type] = MilvusRAGStore(embed_dim=1024)
+            else:
+                raise ValueError(f"Unknown vector store: {store_type}")
+        return self._stores[store_type]
+
+def get_vector_store_manager() -> VectorStoreManager:
+    return VectorStoreManager.get_instance()
+
+class RerankerManager:
+    """Cached reranker instances"""
+    _instance = None
+    _rerankers = {}
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+        
+    def get_reranker(self, model_name: str):
+        if model_name not in self._rerankers:
+            if model_name == "bge-base":
+                self._rerankers[model_name] = BGEReranker(device="cpu")
+            else:
+                raise ValueError(f"Unknown reranker: {model_name}")
+        return self._rerankers[model_name]
+
+def get_reranker_manager() -> RerankerManager:
+    return RerankerManager.get_instance()
 ```
 
 ### Milvus Storage
