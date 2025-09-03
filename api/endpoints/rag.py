@@ -423,3 +423,232 @@ async def evaluate_rag(
     except Exception as e:
         logger.error(f"Evaluation failed for {rag_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
+
+
+@router.get("/rag/list")
+async def list_rags(
+    workspace_id: str = Header(None),
+    limit: int = 50,
+    offset: int = 0,
+    status_filter: Optional[str] = None
+):
+    """
+    List all RAG systems for a workspace
+    
+    Returns RAG systems with their current status and metadata
+    """
+    try:
+        from langchain_integration.rag.storage.milvus_store import MilvusRAGStore
+        from langchain_integration.rag.storage.document_store import get_document_store_manager
+        from langchain_integration.rag.progress.tracker import get_progress_tracker
+        
+        logger.info(f"Listing RAGs for workspace: {workspace_id}")
+        
+        # Get vector store for partition listing
+        vector_store = MilvusRAGStore()
+        progress_tracker = get_progress_tracker()
+        document_store = get_document_store_manager()
+        
+        # Get all RAG partitions from Milvus
+        stats = vector_store.get_stats()
+        partitions = stats.get('partitions', [])
+        
+        # Filter RAG partitions (start with 'rag_')
+        rag_partitions = [p for p in partitions if p.startswith('rag_')]
+        
+        rags = []
+        
+        for partition_name in rag_partitions[offset:offset + limit]:
+            try:
+                # Extract RAG ID
+                rag_id = partition_name.replace('rag_', '')
+                
+                # Get current progress/status
+                progress = await progress_tracker.get_progress(rag_id)
+                
+                # Determine status
+                if progress:
+                    status = progress.get('status', 'unknown')
+                    if status == 'running':
+                        status = 'building'
+                    elif status == 'completed':
+                        status = 'completed'
+                    elif status == 'failed':
+                        status = 'failed'
+                    else:
+                        status = 'unknown'
+                else:
+                    # If no progress info, assume completed (old RAG)
+                    status = 'completed'
+                
+                # Get partition stats from Milvus
+                partition_stats = vector_store.get_partition_stats(partition_name)
+                chunks_count = partition_stats.get('entity_count', 0)
+                
+                # Get storage stats
+                storage_stats = document_store.get_rag_stats(rag_id)
+                
+                # Build RAG info
+                rag_info = {
+                    "rag_id": rag_id,
+                    "name": f"RAG-{rag_id[:8]}",  # Default name
+                    "description": None,
+                    "status": status,
+                    "created_at": "unknown",  # Would need metadata storage
+                    "updated_at": progress.get('timestamp', 'unknown') if progress else 'unknown',
+                    "chunks_count": chunks_count,
+                    "documents_count": storage_stats.get('object_count', 0) if storage_stats else 0
+                }
+                
+                # Add build stats if available
+                if progress and progress.get('metadata'):
+                    metadata = progress['metadata']
+                    if 'build_stats' in metadata:
+                        rag_info['build_stats'] = metadata['build_stats']
+                
+                # Apply status filter if specified
+                if status_filter and status != status_filter:
+                    continue
+                
+                rags.append(rag_info)
+                
+            except Exception as e:
+                logger.error(f"Error processing RAG partition {partition_name}: {e}")
+                continue
+        
+        # Sort by created/updated time (newest first)
+        rags.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
+        
+        return {
+            "success": True,
+            "rags": rags,
+            "total_count": len(rag_partitions),
+            "returned_count": len(rags),
+            "offset": offset,
+            "limit": limit,
+            "workspace_id": workspace_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to list RAGs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list RAGs: {str(e)}")
+
+
+@router.post("/rag/{rag_id}/query")
+async def query_rag(
+    rag_id: str,
+    query: str = Body(...),
+    model: str = Body("mistral7b"),
+    top_k: int = Body(5),
+    use_reranker: bool = Body(True),
+    include_citations: bool = Body(True),
+    workspace_id: str = Header(None)
+):
+    """
+    Full RAG query: search + LLM generation + citations
+    
+    Performs semantic search and generates an answer using the specified LLM,
+    with optional citations to source documents.
+    """
+    try:
+        from langchain_integration.orchestrator import get_orchestrator
+        
+        logger.info(f"RAG query for {rag_id}: {query[:50]}...")
+        
+        # First, perform RAG search
+        search_results = await search_rag(
+            rag_id=rag_id,
+            query=query,
+            top_k=top_k,
+            use_reranker=use_reranker,
+            include_full_content=True,  # Need full content for LLM
+            workspace_id=workspace_id
+        )
+        
+        # Extract relevant context from search results
+        context_chunks = []
+        citations = []
+        
+        for i, candidate in enumerate(search_results.get("candidates", [])):
+            content = candidate.get("content") or candidate.get("excerpt", "")
+            if content:
+                context_chunks.append(content)
+                
+                if include_citations:
+                    citations.append({
+                        "index": i + 1,
+                        "uri": candidate.get("uri", ""),
+                        "similarity_score": candidate.get("similarity_score", 0),
+                        "quality_score": candidate.get("quality_score", 0),
+                        "excerpt": candidate.get("excerpt", content[:200] + "...")
+                    })
+        
+        if not context_chunks:
+            return {
+                "success": True,
+                "rag_id": rag_id,
+                "query": query,
+                "answer": "I couldn't find relevant information in the knowledge base to answer your question.",
+                "context_found": False,
+                "citations": [],
+                "search_results": search_results
+            }
+        
+        # Prepare context for LLM
+        context_text = "\n\n".join([f"[Context {i+1}]\n{chunk}" for i, chunk in enumerate(context_chunks)])
+        
+        # Create RAG prompt
+        rag_prompt = f"""You are a helpful assistant that answers questions based on the provided context. Use only the information from the context to answer the question. If the context doesn't contain enough information to answer the question, say so.
+
+Context:
+{context_text}
+
+Question: {query}
+
+Answer:"""
+        
+        # Get orchestrator for LLM inference
+        orchestrator = get_orchestrator()
+        
+        # Generate answer using specified model
+        llm_response = await orchestrator.generate_response(
+            model=model,
+            prompt=rag_prompt,
+            max_tokens=500,
+            temperature=0.1  # Low temperature for factual responses
+        )
+        
+        answer = llm_response.get("response", "").strip()
+        
+        # Add citation markers if requested
+        if include_citations and answer:
+            # Simple citation marking (could be enhanced with NLP)
+            for i, citation in enumerate(citations):
+                # This is a simple approach - could use more sophisticated citation insertion
+                pass  # Citations are returned separately for now
+        
+        return {
+            "success": True,
+            "rag_id": rag_id,
+            "query": query,
+            "answer": answer,
+            "context_found": True,
+            "model_used": model,
+            "citations": citations if include_citations else [],
+            "search_metadata": {
+                "chunks_used": len(context_chunks),
+                "total_found": search_results.get("total_found", 0),
+                "rerank_applied": search_results.get("params", {}).get("rerank_applied", False)
+            },
+            "llm_metadata": {
+                "model": model,
+                "tokens_used": llm_response.get("tokens_used"),
+                "latency_ms": llm_response.get("latency_ms")
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"RAG query failed for {rag_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")

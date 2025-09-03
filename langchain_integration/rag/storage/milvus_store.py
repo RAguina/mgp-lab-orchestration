@@ -292,3 +292,37 @@ class MilvusRAGStore:
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
             return {}
+    
+    def get_partition_stats(self, partition_name: str) -> Dict[str, Any]:
+        """
+        Get statistics for a specific partition
+        
+        Args:
+            partition_name: Name of the partition
+            
+        Returns:
+            Partition statistics including entity count
+        """
+        try:
+            collection = Collection(self.collection_name)
+            
+            # Load partition for querying
+            collection.load(partition_names=[partition_name])
+            
+            # Get partition statistics
+            stats = collection.get_partition_stats(partition_name)
+            
+            return {
+                "partition_name": partition_name,
+                "entity_count": stats.row_count if hasattr(stats, 'row_count') else 0,
+                "status": "loaded" if collection.has_partition(partition_name) else "not_found"
+            }
+            
+        except Exception as e:
+            logger.debug(f"Failed to get partition stats for {partition_name}: {e}")
+            return {
+                "partition_name": partition_name,
+                "entity_count": 0,
+                "status": "error",
+                "error": str(e)
+            }
