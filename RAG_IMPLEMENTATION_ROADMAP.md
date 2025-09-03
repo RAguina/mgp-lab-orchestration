@@ -14,9 +14,10 @@ pip install PyPDF2 python-docx    # Document parsing
 pip install redis                 # Optional: progress tracking
 
 # ✅ GPT-5 additions for quality
-pip install tiktoken               # Token-aware chunking
+pip install tiktoken               # Token-aware chunking (deprecated for HF tokenizer)
 pip install numpy scikit-learn     # Evaluation metrics
-pip install minio                  # S3-compatible storage (optional)
+pip install minio                  # S3-compatible storage (CORE - not optional)
+pip install python-multipart       # FastAPI file uploads
 ```
 
 ### Core Components
@@ -28,7 +29,8 @@ pip install minio                  # S3-compatible storage (optional)
 │   └── embedding_manager.py      # Model loading/unloading
 ├── storage/  
 │   ├── milvus_store.py           # Vector storage
-│   └── document_store.py         # File management
+│   ├── minio_store.py            # ✅ S3-compatible document storage (CORE)
+│   └── document_store.py         # File management coordination
 ├── processing/
 │   ├── document_parser.py        # PDF/DOCX/TXT parsing
 │   ├── smart_chunker.py          # GPT-5 style chunking
@@ -54,12 +56,28 @@ async def get_build_status(rag_id: str):
     # Return: stage, percentage, eta, metrics
 
 @router.post("/rag/{rag_id}/search")
-async def search_rag(rag_id: str, query: str, top_k: int = 5):
-    # Vector search + rerank, return passages only
+async def search_rag(
+    rag_id: str, 
+    query: str, 
+    top_k: int = 5,
+    ef_search: int = 96,  # ✅ Tuneable HNSW parameter
+    workspace_id: str = Header(None)  # ✅ Multi-tenancy
+):
+    # Vector search + rerank with tuneable parameters
+    # If recall < 0.85, try ef_search=128
 
 @router.post("/rag/{rag_id}/query")  
-async def query_rag(rag_id: str, query: str, model: str = "mistral7b"):
+async def query_rag(rag_id: str, query: str, model: str = "mistral7b", workspace_id: str = Header(None)):
     # Full RAG: search + LLM generation + citations
+
+@router.delete("/rag/{rag_id}")
+async def delete_rag(rag_id: str, workspace_id: str = Header(None)):
+    """✅ GC endpoint: Drop partition + delete MinIO objects (idempotent)"""
+    # 1. Verify workspace ownership
+    # 2. Drop Milvus partition  
+    # 3. Delete MinIO/S3 objects
+    # 4. Clean up metadata in DB
+    # 5. Return deletion summary
 ```
 
 ## Day 3: Document Processing Pipeline
@@ -73,14 +91,22 @@ class SmartChunker:
         self.overlap = overlap
         self.min_size = min_size
         
-        # Token-aware processing
+        # ✅ Token-aware processing aligned to embedding model
         try:
-            import tiktoken
-            self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")  # Not tiktoken
             self.token_aware = True
         except ImportError:
             self.tokenizer = None
             self.token_aware = False
+            
+    def count_tokens(self, txt: str) -> int:
+        """Count tokens using BGE-M3 tokenizer for accurate chunking"""
+        if self.token_aware:
+            return len(self.tokenizer.encode(txt, add_special_tokens=False))
+        else:
+            # Fallback: rough estimation
+            return len(txt.split()) * 1.3
         
     def chunk_document(self, text, doc_metadata):
         """
@@ -164,9 +190,14 @@ class MilvusRAGStore:
         self._ensure_collection()
         
     def _ensure_collection(self):
+        # ✅ Dynamic dimension from model
+        from sentence_transformers import SentenceTransformer
+        temp_model = SentenceTransformer("BAAI/bge-m3")
+        dim = temp_model.get_sentence_embedding_dimension()
+        
         schema = CollectionSchema([
             FieldSchema("id", DataType.INT64, is_primary=True, auto_id=True),
-            FieldSchema("vector", DataType.FLOAT_VECTOR, dim=1024),  # BGE-M3 dim
+            FieldSchema("vector", DataType.FLOAT_VECTOR, dim=dim),  # Dynamic BGE-M3 dim
             FieldSchema("rag_id", DataType.VARCHAR, max_length=64),
             FieldSchema("doc_id", DataType.VARCHAR, max_length=64), 
             FieldSchema("chunk_id", DataType.VARCHAR, max_length=64),
@@ -202,6 +233,10 @@ class MilvusRAGStore:
         data = self._prepare_data(rag_id, chunks, embeddings)
         collection.insert(data, partition_name=partition_name)
         
+        # ✅ Flush after large insertions
+        collection.flush()
+        # collection.compact() if doing bulk deletes
+        
     def search(self, rag_id, query_embedding, top_k=50):
         """Search within specific RAG partition"""  
         collection = Collection(self.collection_name)
@@ -209,13 +244,16 @@ class MilvusRAGStore:
         
         search_params = {"metric_type": "COSINE", "params": {"ef": 96}}
         
+        # ✅ Load only needed partition
+        collection.load(partition_names=[f"rag_{rag_id}"])
+        
         results = collection.search(
             data=[query_embedding],
             anns_field="vector", 
             param=search_params,
             limit=top_k,
             partition_names=[f"rag_{rag_id}"],
-            output_fields=["content", "metadata", "quality_score"]
+            output_fields=["uri", "excerpt", "metadata", "quality_score"]  # ✅ Fixed output fields
         )
         
         return self._format_results(results)
@@ -238,8 +276,17 @@ class MilvusRAGStore:
         
     def _retrieve_content(self, uri):
         """Retrieve full chunk content from MinIO/S3"""
-        # Implementation: fetch from storage backend
-        pass
+        # ✅ Core functionality with MinIO
+        if uri.startswith("s3://") or uri.startswith("minio://"):
+            return self.minio_client.get_object_content(uri)
+        elif uri.startswith("file://"):
+            # Local fallback for development
+            import json
+            file_path = uri.replace("file://", "")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)["content"]
+        else:
+            raise ValueError(f"Unsupported URI scheme: {uri}")
 ```
 
 ## Day 5: Frontend Integration & Reranking
@@ -289,15 +336,42 @@ async def evaluate_rag(rag_id: str, goldset_file: UploadFile = None):
         "avg_latency_ms": np.mean([m["latency_ms"] for m in metrics.values()])
     }
     
-    # Save run report
-    run_report = {**run_metadata, "metrics": avg_metrics, "detailed": metrics}
-    await save_evaluation_report(rag_id, run_report)
+    # ✅ Generate proper run ID and save reproducible manifest
+    import uuid
+    run_id = uuid.uuid4().hex
+    
+    # Get git commit for reproducibility
+    try:
+        import subprocess
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    except:
+        commit = "unknown"
+    
+    # ✅ Complete reproducible manifest  
+    run_report = {
+        "run_id": run_id,
+        "rag_id": rag_id,
+        "timestamp": run_metadata["timestamp"],
+        "embed_model": "BAAI/bge-m3",
+        "embed_version": "latest",  # Could be model hash
+        "chunking": {"size": 800, "overlap": 100, "min_tokens": 120},
+        "index": {"type": "HNSW", "M": 32, "efConstruction": 200, "efSearch": 96},
+        "retrieval": {"top_k": 10},
+        "reranker": {"name": "bge-reranker-base", "top_n": 5},
+        "metrics": avg_metrics,
+        "detailed_metrics": metrics,
+        "commit": commit
+    }
+    
+    # Save to MinIO/S3 for persistence
+    await save_evaluation_report(run_id, run_report)
     
     return {
         "success": True,
+        "run_id": run_id,
         "metrics": avg_metrics,
         "baseline_met": avg_metrics["recall@10"] >= 0.85,  # GPT-5 threshold
-        "report_id": run_report["id"]
+        "report_uri": f"s3://rag-reports/{run_id}/report.json"
     }
 ```
 
@@ -309,20 +383,48 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 
 class BGEReranker:
-    def __init__(self):
+    def __init__(self, device="cpu"):
+        self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-base")
         self.model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-base")
+        self.model.to(self.device)
         self.model.eval()
         
-    def rerank(self, query, passages, top_k=5):
-        """Rerank top-50 to top-5"""
-        pairs = [(query, passage["content"]) for passage in passages]
+    def rerank(self, query, passages, top_k=5, max_passages=64, batch_size=16, device="cpu"):
+        """
+        ✅ Enhanced rerank with batch processing and limits
+        Rerank top-N to top-K with batching for efficiency
+        """
+        # Limit input size
+        passages = passages[:max_passages]
         
-        inputs = self.tokenizer(pairs, padding=True, truncation=True, 
-                               return_tensors="pt", max_length=512)
+        if not passages:
+            return []
+            
+        pairs = [(query, passage.get("content", passage.get("excerpt", ""))) 
+                for passage in passages]
         
-        with torch.no_grad():
-            scores = self.model(**inputs, return_dict=True).logits.view(-1).float()
+        scores = []
+        
+        # Process in batches
+        with torch.inference_mode():  # ✅ More efficient than no_grad
+            for i in range(0, len(pairs), batch_size):
+                batch_pairs = pairs[i:i + batch_size]
+                
+                inputs = self.tokenizer(
+                    batch_pairs, 
+                    padding=True, 
+                    truncation=True,
+                    return_tensors="pt", 
+                    max_length=512
+                ).to(self.device)
+                
+                batch_scores = self.model(**inputs, return_dict=True).logits.view(-1).float()
+                scores.extend(batch_scores.cpu().tolist())
+                
+                # ✅ Free GPU memory after each batch
+                if self.device.startswith("cuda"):
+                    torch.cuda.empty_cache()
             
         # Sort by relevance score
         scored_passages = list(zip(passages, scores))
@@ -331,33 +433,50 @@ class BGEReranker:
         return [passage for passage, score in scored_passages[:top_k]]
 ```
 
-### Progress Tracking
+### Progress Tracking with Resume Capability
 ```python  
 class RAGProgressTracker:
     def __init__(self):
         self.redis_client = redis.Redis() if REDIS_AVAILABLE else None
         
-    async def update_progress(self, rag_id, stage, percentage, metadata=None):
+    async def update_progress(self, rag_id, stage, percentage, metadata=None, last_ok_step=None):
+        """✅ Enhanced progress tracking with resume capability"""
         progress = {
             "stage": stage,
             "percentage": percentage,
             "timestamp": datetime.now().isoformat(),
+            "last_ok_step": last_ok_step,  # ✅ For resuming failed builds
+            "attempt": metadata.get("attempt", 1) if metadata else 1,
             "metadata": metadata or {}
         }
         
-        # Store in Redis
+        # Store in Redis with longer TTL
         if self.redis_client:
             self.redis_client.setex(
                 f"rag_progress:{rag_id}", 
-                3600,  # 1 hour TTL
+                7200,  # 2 hours TTL for resume capability
                 json.dumps(progress)
             )
             
-        # Broadcast via WebSocket
-        await self.websocket_manager.broadcast(
-            f"rag_progress:{rag_id}", 
-            progress
-        )
+        # Also persist in database for auditing
+        await self._persist_progress_to_db(rag_id, progress)
+            
+        # Broadcast via WebSocket + SSE fallback
+        await self.websocket_manager.broadcast(f"rag_progress:{rag_id}", progress)
+        
+    async def get_resume_point(self, rag_id):
+        """Get last successful step for resuming failed builds"""
+        if self.redis_client:
+            progress_json = self.redis_client.get(f"rag_progress:{rag_id}")
+            if progress_json:
+                progress = json.loads(progress_json)
+                return progress.get("last_ok_step"), progress.get("attempt", 1)
+        return None, 1
+        
+    async def _persist_progress_to_db(self, rag_id, progress):
+        """Persist progress to database for auditing"""
+        # Implementation: save to rag_runs table
+        pass
 ```
 
 ### Frontend RAG Panel  
@@ -408,17 +527,35 @@ const RAGCreator: React.FC<RAGCreatorProps> = ({ onRAGCreated }) => {
 ```bash
 # Core RAG
 pip install sentence-transformers==2.2.2
-pip install pymilvus==2.3.1  
+pip install pymilvus==2.3.1  # Or >=2.4 for auto partition_key
 pip install PyPDF2==3.0.1
 pip install python-docx==0.8.11
+pip install minio==7.1.15           # S3-compatible storage
+pip install python-multipart        # FastAPI file uploads
 
-# Optional but recommended
-pip install redis==5.0.1
+# Evaluation & Quality
+pip install numpy scikit-learn       # Metrics calculation
+
+# Optional but recommended  
+pip install redis==5.0.1            # Progress tracking & caching
 
 # Already have
 # - torch (for BGE-M3)
-# - transformers (for reranker)
+# - transformers (for reranker) 
 # - fastapi (for endpoints)
+```
+
+## Environment Configuration
+
+```bash
+# .env.example (✅ Added for DX)
+MILVUS_URI=http://localhost:19530
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin  
+MINIO_BUCKET=rag-storage
+RAG_WORKSPACE=default
+REDIS_URL=redis://localhost:6379
 ```
 
 ## Workspace Structure
