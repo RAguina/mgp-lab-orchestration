@@ -36,6 +36,12 @@ import langchain_integration.langgraph.nodes.execution_node as execution_mod
 
 # Routers
 from api.endpoints import inference, orchestrator, cache, system
+try:
+    from api.endpoints import rag
+    RAG_ROUTER_AVAILABLE = True
+except ImportError as e:
+    RAG_ROUTER_AVAILABLE = False
+    logger.warning(f"⚠️ RAG router not available: {e}")
 
 # Logging básico (no duplica handlers si ya existen)
 logging.basicConfig(
@@ -106,6 +112,13 @@ app.include_router(inference.router)
 app.include_router(orchestrator.router)
 app.include_router(cache.router)
 app.include_router(system.router)
+
+# RAG router (conditional)
+if RAG_ROUTER_AVAILABLE:
+    app.include_router(rag.router)
+    logger.info("✅ RAG endpoints enabled")
+else:
+    logger.info("⚠️ RAG endpoints disabled (missing dependencies)")
 
 # Schemas
 class HealthResponse(BaseModel):
