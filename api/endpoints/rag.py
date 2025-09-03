@@ -286,3 +286,140 @@ async def delete_rag(
     except Exception as e:
         logger.error(f"Delete failed for {rag_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@router.post("/rag/{rag_id}/eval")
+async def evaluate_rag(
+    rag_id: str,
+    goldset_file: Optional[UploadFile] = File(None),
+    use_sample_goldset: bool = False,
+    top_k: int = 10,
+    workspace_id: str = Header(None)
+):
+    """
+    Evaluate RAG system quality using goldset queries
+    
+    Generates reproducible metrics including:
+    - Recall@K, Precision@K, NDCG@K
+    - Mean Reciprocal Rank (MRR)  
+    - Latency statistics (P50, P95, P99)
+    - Success rates and error analysis
+    """
+    try:
+        from langchain_integration.rag.evaluation import (
+            RAGEvaluator, 
+            create_sample_goldset, 
+            save_evaluation_report
+        )
+        import subprocess
+        
+        logger.info(f"Starting evaluation for RAG {rag_id}")
+        
+        # Load goldset
+        if goldset_file:
+            # Load uploaded goldset
+            content = await goldset_file.read()
+            goldset_data = json.loads(content.decode('utf-8'))
+            goldset = goldset_data.get("queries", [])
+            logger.info(f"Loaded {len(goldset)} queries from uploaded goldset")
+        elif use_sample_goldset:
+            # Use sample goldset for testing
+            goldset = create_sample_goldset()
+            logger.info(f"Using sample goldset with {len(goldset)} queries")
+        else:
+            raise HTTPException(status_code=400, detail="Either provide goldset_file or set use_sample_goldset=true")
+        
+        if not goldset:
+            raise HTTPException(status_code=400, detail="Empty goldset provided")
+        
+        # Create RAG search function
+        async def rag_search_function(rag_id_param, query, top_k_param):
+            """Wrapper for RAG search during evaluation"""
+            return await search_rag(
+                rag_id=rag_id_param, 
+                query=query, 
+                top_k=top_k_param, 
+                workspace_id=workspace_id
+            )
+        
+        # Run evaluation
+        evaluator = RAGEvaluator()
+        
+        # Convert async function to sync for evaluator
+        def sync_search(rag_id_param, query, top_k_param):
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(rag_search_function(rag_id_param, query, top_k_param))
+            finally:
+                loop.close()
+        
+        # Get git commit for reproducibility
+        try:
+            commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=".").decode().strip()
+        except:
+            commit = "unknown"
+        
+        # Configuration for reproducible results
+        eval_config = {
+            "top_k": top_k,
+            "workspace_id": workspace_id,
+            "embedding_model": "BAAI/bge-m3",
+            "reranker_model": "BAAI/bge-reranker-base",
+            "git_commit": commit
+        }
+        
+        evaluation_report = evaluator.evaluate_rag_system(
+            rag_search_function=sync_search,
+            goldset=goldset,
+            rag_id=rag_id,
+            config=eval_config
+        )
+        
+        # Save report
+        run_id = evaluation_report["run_id"]
+        report_uri = await save_evaluation_report(run_id, evaluation_report)
+        
+        # Extract key metrics for response
+        aggregate_metrics = evaluation_report.get("aggregate_metrics", {})
+        
+        # Success threshold (configurable)
+        recall_threshold = 0.85
+        latency_threshold_ms = 200
+        
+        success_criteria = {
+            "recall_target_met": aggregate_metrics.get("avg_recall@10", 0) >= recall_threshold,
+            "latency_target_met": aggregate_metrics.get("avg_latency_ms", 1000) <= latency_threshold_ms,
+            "overall_success": (
+                aggregate_metrics.get("avg_recall@10", 0) >= recall_threshold and 
+                aggregate_metrics.get("success_rate", 0) >= 0.9
+            )
+        }
+        
+        logger.info(f"Evaluation completed for {rag_id}: {aggregate_metrics}")
+        
+        return {
+            "success": True,
+            "run_id": run_id,
+            "rag_id": rag_id,
+            "evaluation_summary": {
+                "queries_evaluated": evaluation_report.get("queries_evaluated", 0),
+                "queries_successful": evaluation_report.get("queries_successful", 0),
+                "success_rate": aggregate_metrics.get("success_rate", 0),
+                "avg_recall@10": aggregate_metrics.get("avg_recall@10", 0),
+                "avg_precision@10": aggregate_metrics.get("avg_precision@10", 0),
+                "avg_ndcg@10": aggregate_metrics.get("avg_ndcg@10", 0),
+                "avg_latency_ms": aggregate_metrics.get("avg_latency_ms", 0),
+                "p95_latency_ms": aggregate_metrics.get("p95_latency_ms", 0)
+            },
+            "success_criteria": success_criteria,
+            "report_uri": report_uri,
+            "config": eval_config
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Evaluation failed for {rag_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
