@@ -9,12 +9,12 @@ Combining our Lab architecture expertise with GPT-5's production-ready RAG insig
 ```bash
 # Dependencies  
 pip install sentence-transformers  # BGE-M3 embeddings
-pip install pymilvus               # Vector database
+pip install pymilvus>=2.4.0        # ✅ Latest for partition_key support
 pip install PyPDF2 python-docx    # Document parsing
 pip install redis                 # Optional: progress tracking
 
 # ✅ GPT-5 additions for quality
-pip install tiktoken               # Token-aware chunking (deprecated for HF tokenizer)
+# pip install tiktoken             # ❌ REMOVED - using HuggingFace tokenizer instead
 pip install numpy scikit-learn     # Evaluation metrics
 pip install minio                  # S3-compatible storage (CORE - not optional)
 pip install python-multipart       # FastAPI file uploads
@@ -47,12 +47,12 @@ async def upload_documents(files: List[UploadFile], workspace_id: str = Header(N
     # Handle file upload, return upload_id
 
 @router.post("/rag/build") 
-async def build_rag(request: RAGBuildRequest):
+async def build_rag(request: RAGBuildRequest, workspace_id: str = Header(None)):
     # Async job: ingest → chunk → embed → index
     # Return rag_id, start progress tracking
 
 @router.get("/rag/{rag_id}/status")
-async def get_build_status(rag_id: str):
+async def get_build_status(rag_id: str, workspace_id: str = Header(None)):
     # Return: stage, percentage, eta, metrics
 
 @router.post("/rag/{rag_id}/search")
@@ -61,10 +61,13 @@ async def search_rag(
     query: str, 
     top_k: int = 5,
     ef_search: int = 96,  # ✅ Tuneable HNSW parameter
+    include_full_content: bool = False,  # ✅ P95 stable: uri+excerpt by default
     workspace_id: str = Header(None)  # ✅ Multi-tenancy
 ):
     # Vector search + rerank with tuneable parameters
-    # If recall < 0.85, try ef_search=128
+    # For P95 stable performance, default returns uri + excerpt + metadata
+    # Full content only when include_full_content=true
+    # Optional: filters, mmr_lambda for advanced search
 
 @router.post("/rag/{rag_id}/query")  
 async def query_rag(rag_id: str, query: str, model: str = "mistral7b", workspace_id: str = Header(None)):
@@ -184,7 +187,8 @@ class BGEM3EmbeddingProvider:
 ### Milvus Storage
 ```python
 class MilvusRAGStore:
-    def __init__(self):
+    def __init__(self, document_store=None):  # ✅ Dependency injection
+        self.document_store = document_store
         # Single collection with partitions
         self.collection_name = "ai_lab_chunks"
         self._ensure_collection()
@@ -240,7 +244,7 @@ class MilvusRAGStore:
     def search(self, rag_id, query_embedding, top_k=50):
         """Search within specific RAG partition"""  
         collection = Collection(self.collection_name)
-        collection.load()
+        # Load only the specific partition, not entire collection
         
         search_params = {"metric_type": "COSINE", "params": {"ef": 96}}
         
@@ -278,7 +282,7 @@ class MilvusRAGStore:
         """Retrieve full chunk content from MinIO/S3"""
         # ✅ Core functionality with MinIO
         if uri.startswith("s3://") or uri.startswith("minio://"):
-            return self.minio_client.get_object_content(uri)
+            return self.document_store.get_object_content(uri)
         elif uri.startswith("file://"):
             # Local fallback for development
             import json
@@ -314,10 +318,13 @@ async def evaluate_rag(rag_id: str, goldset_file: UploadFile = None):
     # Run evaluation
     for query_item in goldset:
         query = query_item["query"] 
-        expected_docs = query_item["relevant_docs"]
+        expected_docs = query_item["relevant"]  # ✅ Unified schema
         
-        # Search and measure
+        # Search and measure latency
+        import time
+        t0 = time.perf_counter()
         results = await search_rag(rag_id, query, top_k=10)
+        search_latency_ms = (time.perf_counter() - t0) * 1000
         
         # Calculate metrics
         recall_10 = calculate_recall_at_k(results, expected_docs, k=10)
@@ -326,7 +333,7 @@ async def evaluate_rag(rag_id: str, goldset_file: UploadFile = None):
         metrics[query] = {
             "recall@10": recall_10,
             "ndcg@10": ndcg_10,
-            "latency_ms": results.get("latency_ms", 0)
+            "latency_ms": search_latency_ms
         }
     
     # Aggregate metrics
@@ -527,7 +534,7 @@ const RAGCreator: React.FC<RAGCreatorProps> = ({ onRAGCreated }) => {
 ```bash
 # Core RAG
 pip install sentence-transformers==2.2.2
-pip install pymilvus==2.3.1  # Or >=2.4 for auto partition_key
+pip install pymilvus>=2.4.0        # ✅ Latest for partition_key & performance
 pip install PyPDF2==3.0.1
 pip install python-docx==0.8.11
 pip install minio==7.1.15           # S3-compatible storage
@@ -549,7 +556,7 @@ pip install redis==5.0.1            # Progress tracking & caching
 
 ```bash
 # .env.example (✅ Added for DX)
-MILVUS_URI=http://localhost:19530
+MILVUS_URI=localhost:19530              # gRPC/TCP, not HTTP
 MINIO_ENDPOINT=localhost:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin  
