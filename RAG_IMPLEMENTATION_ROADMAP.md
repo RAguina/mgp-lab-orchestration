@@ -62,12 +62,28 @@ async def search_rag(
     top_k: int = 5,
     ef_search: int = 96,  # ✅ Tuneable HNSW parameter
     include_full_content: bool = False,  # ✅ P95 stable: uri+excerpt by default
+    filters: dict | None = None,  # ✅ Future: metadata filtering 
+    mmr_lambda: float | None = None,  # ✅ Future: MMR diversification
     workspace_id: str = Header(None)  # ✅ Multi-tenancy
 ):
     # Vector search + rerank with tuneable parameters
     # For P95 stable performance, default returns uri + excerpt + metadata
     # Full content only when include_full_content=true
-    # Optional: filters, mmr_lambda for advanced search
+    
+    # Get embedder and search
+    embedder = BGEM3EmbeddingProvider()
+    query_embedding = embedder.embed_query(query)
+    
+    # Search with parameters
+    embed_dim = embedder.model.get_sentence_embedding_dimension()
+    rag_store = MilvusRAGStore(document_store=minio_store, embed_dim=embed_dim)
+    results = rag_store.search(
+        rag_id=rag_id,
+        query_embedding=query_embedding,
+        top_k=top_k,
+        ef_search=ef_search,
+        include_full_content=include_full_content
+    )
 
 @router.post("/rag/{rag_id}/query")  
 async def query_rag(rag_id: str, query: str, model: str = "mistral7b", workspace_id: str = Header(None)):
@@ -187,17 +203,16 @@ class BGEM3EmbeddingProvider:
 ### Milvus Storage
 ```python
 class MilvusRAGStore:
-    def __init__(self, document_store=None):  # ✅ Dependency injection
+    def __init__(self, document_store=None, embed_dim=1024):  # ✅ BGE-M3 hardcoded for now
         self.document_store = document_store
+        self.embed_dim = embed_dim
         # Single collection with partitions
         self.collection_name = "ai_lab_chunks"
         self._ensure_collection()
         
     def _ensure_collection(self):
-        # ✅ Dynamic dimension from model
-        from sentence_transformers import SentenceTransformer
-        temp_model = SentenceTransformer("BAAI/bge-m3")
-        dim = temp_model.get_sentence_embedding_dimension()
+        # ✅ Use injected dimension, no model loading here
+        dim = self.embed_dim
         
         schema = CollectionSchema([
             FieldSchema("id", DataType.INT64, is_primary=True, auto_id=True),
@@ -241,12 +256,12 @@ class MilvusRAGStore:
         collection.flush()
         # collection.compact() if doing bulk deletes
         
-    def search(self, rag_id, query_embedding, top_k=50):
-        """Search within specific RAG partition"""  
+    def search(self, rag_id, query_embedding, top_k=50, ef_search=96, include_full_content=False):
+        """✅ Search within specific RAG partition with tunable parameters"""  
         collection = Collection(self.collection_name)
         # Load only the specific partition, not entire collection
         
-        search_params = {"metric_type": "COSINE", "params": {"ef": 96}}
+        search_params = {"metric_type": "COSINE", "params": {"ef": ef_search}}
         
         # ✅ Load only needed partition
         collection.load(partition_names=[f"rag_{rag_id}"])
@@ -260,22 +275,23 @@ class MilvusRAGStore:
             output_fields=["uri", "excerpt", "metadata", "quality_score"]  # ✅ Fixed output fields
         )
         
-        return self._format_results(results)
+        return self._format_results(results, include_full=include_full_content)
         
-    def _format_results(self, results):
-        """Format search results with content retrieval from storage"""
+    def _format_results(self, results, include_full: bool = False):
+        """✅ Format search results with optional full content"""
         formatted = []
         for hits in results:
             for hit in hits:
-                # ✅ Retrieve full content from storage URI
-                full_content = self._retrieve_content(hit.entity.get("uri"))
-                formatted.append({
-                    "content": full_content,
-                    "excerpt": hit.entity.get("excerpt"), 
+                item = {
+                    "uri": hit.entity.get("uri"),
+                    "excerpt": hit.entity.get("excerpt"),
                     "metadata": hit.entity.get("metadata"),
                     "quality_score": hit.entity.get("quality_score"),
                     "similarity_score": hit.score
-                })
+                }
+                if include_full:
+                    item["content"] = self._retrieve_content(item["uri"])
+                formatted.append(item)
         return formatted
         
     def _retrieve_content(self, uri):
