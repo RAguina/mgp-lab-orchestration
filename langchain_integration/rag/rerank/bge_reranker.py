@@ -49,11 +49,9 @@ class BGEReranker:
         self.max_length = max_length
         self.batch_size = batch_size
         
-        # Device selection
-        if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
+        # Device selection using centralized function
+        from .. import get_optimal_device
+        self.device = get_optimal_device(device)
             
         logger.info(f"Initializing BGE Reranker on {self.device}")
         

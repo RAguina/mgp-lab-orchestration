@@ -1,0 +1,13 @@
+{
+  "rag_id": "test_rag_001",
+  "chunk_id": "chunk_000",
+  "doc_id": "test_doc_001",
+  "content": "RAG System Implementation Guide",
+  "metadata": {
+    "quality_score": 0.67875,
+    "token_count": 6,
+    "source": "test_document.txt"
+  },
+  "stored_at": "2025-09-04T00:54:00.952840",
+  "version": "1.0"
+}

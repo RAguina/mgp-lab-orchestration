@@ -3,7 +3,7 @@ RAG API Endpoints
 Production-ready endpoints for RAG creation, search and management
 """
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Header
+from fastapi import APIRouter, HTTPException, UploadFile, File, Header, Body
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -51,9 +51,9 @@ class RAGSearchResponse(BaseModel):
     returned_count: int
 
 # Global storage instances (will be properly initialized)
-_milvus_store: Optional[MilvusRAGStore] = None
+_milvus_store = None  # Type will be MilvusRAGStore when available
 
-def get_milvus_store() -> MilvusRAGStore:
+def get_milvus_store():
     """Get or create Milvus store instance"""
     global _milvus_store
     if _milvus_store is None:

@@ -1,0 +1,13 @@
+{
+  "rag_id": "test_rag_001",
+  "chunk_id": "chunk_003",
+  "doc_id": "test_doc_001",
+  "content": "1. Document Processing Pipeline - Handles PDF, DOCX, and TXT files\n2. Vector Storage - Uses Milvus for similarity search\n3. Content Storage - Uses MinIO for full document content",
+  "metadata": {
+    "quality_score": 0.5841666666666667,
+    "token_count": 43,
+    "source": "test_document.txt"
+  },
+  "stored_at": "2025-09-04T00:54:01.134250",
+  "version": "1.0"
+}

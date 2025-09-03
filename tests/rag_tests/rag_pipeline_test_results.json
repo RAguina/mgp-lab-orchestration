@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-09-04T00:54:12.526090",
+  "test_document": {
+    "filename": "test_document.txt",
+    "size_chars": 2762,
+    "title": "RAG System Implementation Guide"
+  },
+  "processing_results": {
+    "chunks_generated": 22,
+    "embeddings_generated": 22,
+    "chunks_stored_minio": 22,
+    "vectors_stored_milvus": 0,
+    "search_results": 0
+  },
+  "chunk_examples": [
+    {
+      "content_preview": "RAG System Implementation Guide",
+      "quality_score": 0.67875,
+      "token_count": 6,
+      "embedding_dimension": 1024
+    },
+    {
+      "content_preview": "Introduction\nThis document explains how to implement a production-ready Retrieval-Augmented Generation (RAG) system using BGE-M3 embeddings and Milvus...",
+      "quality_score": 0.7775,
+      "token_count": 44,
+      "embedding_dimension": 1024
+    },
+    {
+      "content_preview": "Architecture Overview\nThe RAG system consists of three main components:",
+      "quality_score": 0.56,
+      "token_count": 16,
+      "embedding_dimension": 1024
+    }
+  ],
+  "storage_uris": [
+    "minio://rag-storage/chunks/test_rag_001/test_doc_001/chunk_000.json",
+    "minio://rag-storage/chunks/test_rag_001/test_doc_001/chunk_001.json",
+    "minio://rag-storage/chunks/test_rag_001/test_doc_001/chunk_002.json"
+  ],
+  "success": true
+}

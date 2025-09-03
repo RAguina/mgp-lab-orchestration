@@ -10,11 +10,8 @@ from dataclasses import dataclass
 
 logger = logging.getLogger("rag.processing.smart_chunker")
 
-try:
-    from transformers import AutoTokenizer
-    HF_TOKENIZER_AVAILABLE = True
-except ImportError:
-    HF_TOKENIZER_AVAILABLE = False
+# Remove redundant tokenizer import - we'll reuse from embedding manager
+HF_TOKENIZER_AVAILABLE = True
 
 
 @dataclass
@@ -73,17 +70,23 @@ class SmartChunker:
         self.ideal_sentence_length = 20  # tokens
         
     def _init_tokenizer(self):
-        """Initialize BGE-M3 tokenizer for accurate token counting"""
-        if not HF_TOKENIZER_AVAILABLE:
-            logger.warning("HuggingFace transformers not available, using word-based estimation")
-            return
-            
+        """Initialize BGE-M3 tokenizer by reusing from embedding manager"""
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.token_aware = True
-            logger.info(f"Initialized {self.model_name} tokenizer for chunking")
+            # Reuse tokenizer from embedding manager to avoid redundancy
+            from ..embeddings.embedding_manager import get_embedding_manager
+            embedder = get_embedding_manager().get_provider("bge-m3", device="cpu")
+            
+            # Access internal tokenizer from SentenceTransformer
+            if hasattr(embedder.model, 'tokenizer'):
+                self.tokenizer = embedder.model.tokenizer
+                self.token_aware = True
+                logger.info(f"Reusing BGE-M3 tokenizer from embedding manager")
+            else:
+                # Fallback to word estimation
+                self.token_aware = False
+                logger.warning("Could not access tokenizer from embedding model, using word estimation")
         except Exception as e:
-            logger.warning(f"Failed to load tokenizer {self.model_name}: {e}")
+            logger.warning(f"Failed to get tokenizer from embedding manager: {e}")
             self.token_aware = False
     
     def count_tokens(self, text: str) -> int:

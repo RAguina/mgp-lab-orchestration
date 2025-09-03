@@ -132,10 +132,14 @@ class MinIODocumentStore:
                 chunk_json = json.dumps(chunk_data, ensure_ascii=False, indent=None)
                 chunk_bytes = chunk_json.encode('utf-8')
                 
+                # MinIO needs a file-like object, not raw bytes
+                from io import BytesIO
+                data_stream = BytesIO(chunk_bytes)
+                
                 self.client.put_object(
                     bucket_name=self.bucket_name,
                     object_name=object_key,
-                    data=chunk_bytes,
+                    data=data_stream,
                     length=len(chunk_bytes),
                     content_type="application/json"
                 )

@@ -1,0 +1,13 @@
+{
+  "rag_id": "test_rag_001",
+  "chunk_id": "chunk_002",
+  "doc_id": "test_doc_001",
+  "content": "Architecture Overview\nThe RAG system consists of three main components:",
+  "metadata": {
+    "quality_score": 0.56,
+    "token_count": 16,
+    "source": "test_document.txt"
+  },
+  "stored_at": "2025-09-04T00:54:01.067386",
+  "version": "1.0"
+}

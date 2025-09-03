@@ -1,0 +1,75 @@
+RAG System Implementation Guide
+
+Introduction
+This document explains how to implement a production-ready Retrieval-Augmented Generation (RAG) system using BGE-M3 embeddings and Milvus vector database.
+
+Architecture Overview
+The RAG system consists of three main components:
+1. Document Processing Pipeline - Handles PDF, DOCX, and TXT files
+2. Vector Storage - Uses Milvus for similarity search
+3. Content Storage - Uses MinIO for full document content
+
+Document Processing
+Documents are processed through several stages:
+- Text extraction from various formats
+- Smart chunking based on semantic boundaries
+- Quality scoring to filter low-quality chunks
+- Deduplication to remove similar content
+- Token counting using BGE-M3 tokenizer
+
+The chunking process uses a sliding window approach with configurable chunk size (default 800 tokens) and overlap (default 100 tokens). Each chunk receives a quality score based on information density, coherence, and length.
+
+Vector Embeddings
+The system uses BGE-M3 (BAAI General Embedding Model v3) for generating embeddings. BGE-M3 provides:
+- 1024-dimensional dense vectors
+- Support for multiple languages
+- High performance on retrieval tasks
+- Efficient batch processing
+
+Vector Storage with Milvus
+Milvus serves as the vector database with the following features:
+- HNSW indexing for fast similarity search  
+- Partition-based organization by RAG system
+- Configurable similarity metrics (L2, IP, COSINE)
+- Scalable horizontal architecture
+
+Content Storage with MinIO
+MinIO provides S3-compatible object storage for:
+- Full document content storage
+- Chunk content with metadata
+- URI-based access pattern
+- Health monitoring and statistics
+
+Search and Retrieval
+The search process involves:
+1. Query embedding generation using BGE-M3
+2. Vector similarity search in Milvus
+3. Content retrieval from MinIO using URIs
+4. Optional reranking for improved relevance
+5. Context assembly for LLM generation
+
+Performance Optimization
+Several optimizations are implemented:
+- Tokenizer sharing between components
+- Singleton model managers
+- Efficient memory usage patterns
+- Batch processing support
+- Device management (CPU/GPU)
+
+Quality Assurance
+The system includes comprehensive evaluation:
+- Recall@K and Precision@K metrics
+- NDCG for ranking quality
+- Latency measurements
+- Success rate tracking
+- Automated threshold validation
+
+Production Deployment
+For production deployment, configure:
+- Environment variables for services
+- Docker containers for Milvus and MinIO
+- Load balancing and scaling
+- Monitoring and alerting
+- Backup and recovery procedures
+
+This RAG implementation provides a robust foundation for building intelligent document retrieval systems with high performance and production-grade reliability.

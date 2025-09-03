@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(python test:*)"
+      "Bash(python test:*)",
+      "Bash(venv/Scripts/pip.exe install:*)"
     ],
     "deny": [],
     "ask": []

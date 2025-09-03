@@ -1,0 +1,13 @@
+{
+  "rag_id": "test_rag_001",
+  "chunk_id": "chunk_001",
+  "doc_id": "test_doc_001",
+  "content": "Introduction\nThis document explains how to implement a production-ready Retrieval-Augmented Generation (RAG) system using BGE-M3 embeddings and Milvus vector database.",
+  "metadata": {
+    "quality_score": 0.7775,
+    "token_count": 44,
+    "source": "test_document.txt"
+  },
+  "stored_at": "2025-09-04T00:54:01.007413",
+  "version": "1.0"
+}
